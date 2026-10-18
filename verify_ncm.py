@@ -318,7 +318,7 @@ PROFILE = os.path.join(HERE, ".chrome-ncm")
 CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 if not os.path.isfile(CHROME):
     for c in (r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-              r"C:\Users\yyfabab\AppData\Local\Google\Chrome\Application\chrome.exe"):
+              os.path.expandvars(r"%USERPROFILE%\AppData\Local\Google\Chrome\Application\chrome.exe")):
         if os.path.isfile(c):
             CHROME = c
             break

@@ -35,8 +35,8 @@
 #   PY_MANAGED —— 纯静态 / 纯逻辑（frontend_static / disk / train_rounds）
 cd /d/AHC/VoiceStudio || exit 2
 
-PY_MANAGED="C:/Users/yyfabab/.workbuddy/binaries/python/versions/3.13.12/python.exe"
-PY_VENV="C:/Users/yyfabab/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
+PY_MANAGED="${REG_PY_MANAGED:-${USERPROFILE:-$HOME}/.workbuddy/binaries/python/versions/3.13.12/python.exe}"
+PY_VENV="${REG_PY_VENV:-${USERPROFILE:-$HOME}/.workbuddy/binaries/python/envs/default/Scripts/python.exe}"
 PY_RVC="/d/RVC/Retrieval-based-Voice-Conversion-WebUI/runtime/python.exe"
 PY_GSV="/d/BaiduNetdiskDownload/GPT-SoVITS(1)/v5最新版/GPT-SoVITS-v5-20261005nvidia50x0/GPT-SoVITS-v2pro-20261006nvidia50x0/runtime/python.exe"
 LOG=${REG_LOG:-_reg_all.log}

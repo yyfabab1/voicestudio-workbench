@@ -47,12 +47,14 @@ WB_TOP_FILES = [
     "_cer_metrics.py",
     "README.md", "_run_regression.sh",
 ]
-WB_TOP_DIRS = ["web", "stages", "steps", "tools"]
+# ★ `.testlib` 看着像垃圾，但 `verify_music.py` 真的在读它里面的
+#   broken.wav / enc.ncm ⇒ 必须进包。别因为名字像临时目录就排掉。
+WB_TOP_DIRS = ["web", "stages", "steps", "tools", ".testlib"]
 WB_TOP_GLOB = [("verify_", ".py"), ("自动解密网易云ncm", ".bat"),
                ("启动VoiceStudio", ".bat")]
 
 # 打包时无条件跳过
-SKIP_NAMES = {"__pycache__", ".git", "node_modules", ".testlib"}
+SKIP_NAMES = {"__pycache__", ".git", "node_modules"}
 SKIP_PREFIX = (".cdp-", ".chrome-")
 SKIP_SUFFIX = (".log", ".out", ".png", ".pyc", ".tmp")
 

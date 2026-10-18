@@ -8,7 +8,7 @@ rem  ASCII interpreters and lets ncm_watch.py do the real work.)
 rem
 rem  Safe to run repeatedly: ncm_watch.py --start is single-instance.
 rem ---------------------------------------------------------------
-set "PY=C:\Users\yyfabab\.workbuddy\binaries\python\versions\3.13.12\python.exe"
+set "PY=%USERPROFILE%\.workbuddy\binaries\python\versions\3.13.12\python.exe"
 set "DIR=D:\AHC\VoiceStudio"
 
 if not exist "%PY%" set "PY=D:\RVC\Retrieval-based-Voice-Conversion-WebUI\runtime\python.exe"
