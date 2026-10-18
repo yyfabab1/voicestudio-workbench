@@ -1,0 +1,816 @@
+:root{
+  --bg:#0d1117;
+  --bg2:#111725;
+  --card:#161d2b;
+  --card2:#1b2334;
+  --line:#242e42;
+  --line2:#2f3b53;
+  --txt:#e6ecf5;
+  --txt2:#9aa8bd;
+  --txt3:#6b7891;
+  --acc:#6c8cff;
+  --acc2:#8b6cff;
+  --ok:#3fbf7f;
+  --warn:#e0b53c;
+  --bad:#ff6b6b;
+  --r:14px;
+  --sh:0 8px 28px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+/* ★ 这里原来是 `height:100%`，是个**潜伏很久的布局缺陷**：
+     它把 body 的高度钉死成"一屏"（实测 904px），而真实内容有 3990px ——
+     多出来的部分**溢出到 body 之外**。后果是 `.top` 的 position:sticky
+     **从来没生效过**（sticky 只在它包含块的范围内粘住，body 只有一屏高，
+     顶栏滚过一屏就跟着一起走了）。以前顶栏只有 logo 和几个按钮，滚走了
+     也没人在意；加了页内导航之后这是致命的 —— 导航条滚两屏就消失了，
+     "一键跳到我的音乐"等于白做。
+     改成 min-height 之后：内容短时仍然铺满一屏（背景不露白），
+     内容长时 body 跟着长 ⇒ sticky 有完整的滚动范围。
+
+     背景不受影响：html 没有自己的 background，body 的背景会传播到画布
+     （canvas propagation），所以去掉固定高度后渐变依然是满屏的。 */
+html,body{margin:0;padding:0;min-height:100%}
+body{
+  background:
+    radial-gradient(1100px 600px at 12% -10%, #1a2340 0%, transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, #241a3a 0%, transparent 55%),
+    var(--bg);
+  color:var(--txt);
+  font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+button,input,textarea,select{font-family:inherit;font-size:inherit;color:inherit}
+a{color:var(--acc);text-decoration:none}
+
+/* ---------- 顶栏 ---------- */
+.top{
+  position:sticky;top:0;z-index:30;
+  display:flex;align-items:center;gap:14px;
+  /* 窄屏时页内导航整条换行到第二行（见下面 .nav 的媒体查询） */
+  flex-wrap:wrap;row-gap:8px;
+  padding:14px 22px;
+  background:rgba(13,17,23,.82);
+  backdrop-filter:blur(14px);
+  border-bottom:1px solid var(--line);
+}
+.brand{display:flex;align-items:center;gap:10px;font-weight:650;letter-spacing:.3px}
+.brand .dot{
+  width:26px;height:26px;border-radius:9px;
+  background:linear-gradient(135deg,var(--acc),var(--acc2));
+  box-shadow:0 4px 14px rgba(108,140,255,.4);
+}
+.brand small{color:var(--txt3);font-weight:400;margin-left:2px}
+.spacer{flex:1}
+.env{color:var(--txt3);font-size:12px;display:flex;gap:14px;flex-wrap:wrap}
+.env b{color:var(--txt2);font-weight:500}
+
+/* ---------- 页内导航（整页 4 屏多，没它「我的音乐」要滚两屏） ----------
+   类名一律带 nav- 前缀：踩过一次全局短类名（.ab）撞上翻唱台分离轨道的
+   `.stems .ab`，把人家整块布局撑塌、两个按钮叠在同一个坐标上。 */
+.nav{display:flex;align-items:center;gap:2px;min-width:0}
+.nav-i{
+  display:inline-flex;align-items:center;gap:5px;white-space:nowrap;
+  padding:6px 11px;border-radius:9px;cursor:pointer;
+  border:1px solid transparent;color:var(--txt3);
+  font-size:13px;font-weight:500;transition:.15s;
+}
+.nav-i:hover{color:var(--txt);background:var(--card2)}
+.nav-i.on{
+  color:var(--txt);background:var(--card2);border-color:var(--line2);
+}
+/* 窄屏：导航整条换到第二行、可横向滑 —— 是换行不是隐藏，功能一个都不少。
+   （配合上面 .top 的 flex-wrap） */
+@media (max-width:1080px){
+  .nav{order:10;flex-basis:100%;overflow-x:auto;padding-bottom:2px}
+  .nav-i{padding:5px 9px;font-size:12.5px}
+}
+
+.btn{
+  display:inline-flex;align-items:center;gap:7px;
+  padding:8px 15px;border-radius:10px;cursor:pointer;
+  border:1px solid var(--line2);background:var(--card2);
+  color:var(--txt);transition:.16s;font-weight:500;white-space:nowrap;
+}
+.btn:hover{background:#232d42;border-color:#3b496a;transform:translateY(-1px)}
+.btn:active{transform:none}
+.btn.pri{
+  background:linear-gradient(135deg,var(--acc),var(--acc2));
+  border-color:transparent;color:#fff;
+  box-shadow:0 4px 16px rgba(108,140,255,.32);
+}
+.btn.pri:hover{filter:brightness(1.08)}
+.btn.sm{padding:5px 11px;font-size:12.5px;border-radius:8px}
+.btn.ghost{background:transparent}
+.btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
+/* 现在出不了东西的入口：弱化，但仍然点得动 —— 点进去能看到为什么（页面顶部有状态条） */
+.btn.off{opacity:.5}
+.btn.off:hover{opacity:.78}
+
+/* ---------- 「现在能干什么」状态条 ----------
+   ★ 类名一律带 abk- 前缀。踩过一次：这里原本写的是 `.ab`/`.ab-dot`，
+   而翻唱台分离轨道那边**已经在用 `.ab`**（见下面 `.stems .ab`）——
+   于是这几条规则跑过去给人家的元素加了 padding 和 border，把整块布局撑塌，
+   表现是翻唱台两个按钮叠在同一个坐标上、点哪个都点不到（lyric_ui 四判据变红）。
+   加新样式之前先 grep 一遍类名，别用这么短的名字。 */
+.abk-bar{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
+.abk{display:flex;gap:9px;align-items:flex-start;padding:10px 12px;border-radius:11px;
+  border:1px solid var(--line);background:var(--card2)}
+.abk-dot{width:8px;height:8px;border-radius:50%;margin-top:5px;flex:0 0 auto;background:var(--txt3)}
+.abk.ok{border-color:rgba(63,191,127,.3);background:rgba(63,191,127,.07)}
+.abk.ok .abk-dot{background:#5fd69b}
+.abk.mid{border-color:rgba(224,181,60,.28);background:rgba(224,181,60,.06)}
+.abk.mid .abk-dot{background:#e8c65f}
+.abk.no .abk-dot{background:#5a6478}
+.abk-tx{font-size:12.5px;color:var(--txt2);line-height:1.55}
+.abk-tx b{color:var(--txt);font-weight:600;margin-right:6px}
+.abk-next{display:block;margin-top:4px;color:var(--acc);opacity:.92}
+
+/* ---------- 布局 ---------- */
+.wrap{max-width:1280px;margin:0 auto;padding:22px}
+.sec-h{display:flex;align-items:baseline;gap:10px;margin:26px 0 14px}
+.sec-h h2{margin:0;font-size:17px;font-weight:640}
+.sec-h span{color:var(--txt3);font-size:12.5px}
+
+/* ---------- 角色卡片 ---------- */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:16px}
+.card{
+  position:relative;overflow:hidden;
+  background:linear-gradient(180deg,var(--card) 0%,#141b28 100%);
+  border:1px solid var(--line);border-radius:var(--r);
+  padding:16px;cursor:pointer;transition:.18s;
+  /* 竖排：好让 .acts 吃掉剩余空间贴到底（见下面那条规则） */
+  display:flex;flex-direction:column;
+}
+.card:hover{transform:translateY(-3px);border-color:var(--line2);box-shadow:var(--sh)}
+.card .glow{
+  position:absolute;inset:-40% 55% 55% -40%;border-radius:50%;
+  filter:blur(38px);opacity:.30;pointer-events:none;
+}
+.card .row1{display:flex;gap:12px;align-items:center}
+.avatar{
+  width:52px;height:52px;border-radius:16px;flex:none;
+  display:grid;place-items:center;font-size:21px;font-weight:700;color:#fff;
+  box-shadow:0 6px 18px rgba(0,0,0,.35);
+}
+.card .nm{font-size:16px;font-weight:620;line-height:1.3}
+.card .sub{color:var(--txt3);font-size:12px;margin-top:2px}
+.tag{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:2px 9px;border-radius:20px;font-size:11.5px;font-weight:550;
+  border:1px solid transparent;
+}
+.tag.speech{background:rgba(63,191,127,.13);color:#5fd69b;border-color:rgba(63,191,127,.3)}
+.tag.singing{background:rgba(224,181,60,.13);color:#e8c65f;border-color:rgba(224,181,60,.3)}
+/* 试听样片：跟"唱"区分开 —— 它只是一小段，别当成正式成品 */
+.tag.preview{background:rgba(108,140,255,.14);color:#9db1ff;border-color:rgba(108,140,255,.32)}
+.tag.pending{background:rgba(255,107,107,.12);color:#ff8a8a;border-color:rgba(255,107,107,.28)}
+.tag.none{background:rgba(154,168,189,.1);color:var(--txt3);border-color:var(--line2)}
+/* 能力徽章：一眼看出这个角色现在能不能出东西（绿=现在就能用，黄=训一下能用，灰=还差素材） */
+.tag.ok{background:rgba(63,191,127,.13);color:#5fd69b;border-color:rgba(63,191,127,.3)}
+.tag.mid{background:rgba(224,181,60,.13);color:#e8c65f;border-color:rgba(224,181,60,.3)}
+.tag.no{background:rgba(154,168,189,.08);color:var(--txt3);border-color:var(--line2)}
+.card .intro{
+  margin-top:11px;min-height:38px;color:var(--txt2);font-size:13px;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+}
+.card .meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
+.chip{
+  font-size:11.5px;color:var(--txt2);background:var(--card2);
+  border:1px solid var(--line);border-radius:7px;padding:3px 8px;
+}
+/* margin-top:auto 把按钮推到底：同一行的卡片本来就等高（grid 默认 stretch），
+   但内容长短不一时按钮会浮在不同高度，一眼扫过去对不齐。
+   padding-top 兜住"内容太满、没有富余空间"的情况 —— 纯 auto 会退化成 0 贴太近。 */
+.card .acts{display:flex;gap:8px;margin-top:auto;padding-top:13px;flex-wrap:wrap}
+
+.empty{
+  border:1px dashed var(--line2);border-radius:var(--r);
+  padding:44px 20px;text-align:center;color:var(--txt3);background:rgba(22,29,43,.4);
+}
+.empty b{display:block;color:var(--txt2);font-size:15px;margin-bottom:6px}
+
+/* ---------- 抽屉 ---------- */
+.mask{
+  position:fixed;inset:0;background:rgba(5,8,14,.6);backdrop-filter:blur(3px);
+  z-index:40;display:none;
+}
+.mask.on{display:block}
+.drawer{
+  position:fixed;top:0;right:0;bottom:0;width:min(760px,100%);
+  background:var(--bg2);border-left:1px solid var(--line);
+  z-index:41;transform:translateX(100%);transition:transform .26s cubic-bezier(.22,.7,.3,1);
+  display:flex;flex-direction:column;
+}
+.drawer.on{transform:none}
+.dhead{padding:18px 22px;border-bottom:1px solid var(--line);display:flex;gap:14px;align-items:center}
+.dhead .avatar{width:56px;height:56px;border-radius:18px;font-size:22px}
+.dbody{flex:1;overflow:auto;padding:18px 22px 40px}
+.tabs{display:flex;gap:6px;padding:12px 22px 0;border-bottom:1px solid var(--line)}
+.tab{
+  padding:9px 15px;border-radius:10px 10px 0 0;cursor:pointer;color:var(--txt3);
+  font-weight:520;border:1px solid transparent;border-bottom:none;
+}
+.tab.on{color:var(--txt);background:var(--card);border-color:var(--line)}
+.pane{display:none}
+.pane.on{display:block}
+
+.fld{margin-bottom:15px}
+.fld label{display:block;font-size:12.5px;color:var(--txt3);margin-bottom:6px}
+.inp,textarea.inp{
+  width:100%;padding:9px 12px;border-radius:10px;
+  background:#121927;border:1px solid var(--line);color:var(--txt);outline:none;transition:.15s;
+}
+.inp:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(108,140,255,.14)}
+textarea.inp{resize:vertical;min-height:74px;line-height:1.6}
+.hint{font-size:12px;color:var(--txt3);margin-top:5px}
+/* 训练页「会直接被拦下」这类硬提醒：用 .st.failed 同款的红色，
+   在深色底上比 var(--bad) 本体更耐看（--bad 用于描边/小圆点）。 */
+.warn{color:#ff8a8a;font-weight:620}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+/* 勾选项：说明文字可能要折两三行，所以要 align-items:flex-start，
+   不然复选框会被顶到第一行的正中间，看着像错位。 */
+.chkbox{display:flex;gap:8px;align-items:flex-start;margin-top:8px;
+        font-size:12.5px;color:var(--txt2);line-height:1.6}
+.chkbox input{margin-top:2px;flex:none}
+.chkbox.hl{background:rgba(255,138,138,.12);border-radius:6px;padding:6px 8px;
+           box-shadow:inset 0 0 0 1px rgba(255,138,138,.45)}
+
+/* ---------- 片段表 ---------- */
+.seglist{display:flex;flex-direction:column;gap:9px}
+.seg{
+  display:grid;grid-template-columns:34px 1fr auto;gap:11px;align-items:center;
+  background:var(--card);border:1px solid var(--line);border-radius:11px;padding:10px 12px;
+}
+.seg .no{color:var(--txt3);font-size:12px;text-align:center}
+.seg .txt{flex:1}
+.seg input{
+  width:100%;background:#121927;border:1px solid var(--line);
+  border-radius:8px;padding:6px 9px;color:var(--txt);
+}
+.seg input:focus{outline:none;border-color:var(--acc)}
+.seg .op{display:flex;gap:6px;align-items:center}
+.seg .dur{font-size:11.5px;color:var(--txt3);margin-top:3px}
+.seg.ref{border-color:var(--acc);box-shadow:0 0 0 1px rgba(108,140,255,.25)}
+.mini{
+  border:1px solid var(--line2);background:var(--card2);border-radius:7px;
+  padding:4px 9px;cursor:pointer;font-size:12px;color:var(--txt2);transition:.15s;
+}
+.mini:hover{background:#26314a;color:var(--txt)}
+.mini.on{background:rgba(108,140,255,.18);border-color:var(--acc);color:#b9c8ff}
+
+/* ---------- 产物 ---------- */
+.out{
+  display:flex;align-items:center;gap:12px;padding:11px 13px;
+  background:var(--card);border:1px solid var(--line);border-radius:11px;margin-bottom:9px;
+}
+.out .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.out .m{font-size:11.5px;color:var(--txt3);margin-top:2px}
+audio{height:34px;max-width:260px}
+
+/* ---------- 任务 ---------- */
+/* z-index 必须是 45，不是 35。
+   以前这里写的是 35，而 .mask=40 / .drawer=41 —— 于是打开角色抽屉点「开始训练」，
+   训练面板被整块遮罩和抽屉盖得**一点都看不见**。界面还提示"看左下角进度"，
+   而左下角恰恰是被盖住的那个位置。这是"关了训练就看不见进度"的直接原因：
+   不是任务丢了，是任务一直在那儿，只是被挡住了。
+   45 高于遮罩和抽屉，训练全程可见。 */
+/* ★ 任务多了要能滚：以前没有高度上限，卡片一路往上堆，
+   堆到屏幕外面去 —— 结果最上面那几张任务卡的按钮**根本点不到**
+   （验收脚本量到的几何是"在视口外"，真鼠标按坐标点必然打空）。
+   上限取视口高减掉上下留白，超出的部分自己滚。 */
+.jobs{
+  position:fixed;left:18px;bottom:18px;z-index:45;
+  width:min(430px,calc(100% - 36px));
+  /* ★ 上限从 calc(100vh-36px) 收到 58vh：以前任务一多，面板能从底部
+     一路长到屏幕顶，把角色卡 / 训练页签 / 曲库按钮全压在下面。
+     58vh 保证"任务看得见"和"下面内容还能用"两边都留得住（超出的自己滚）。 */
+  max-height:58vh;overflow-y:auto;overflow-x:hidden;
+  padding-right:2px;
+}
+.jobbox{
+  background:rgba(22,29,43,.96);backdrop-filter:blur(10px);
+  border:1px solid var(--line2);border-radius:12px;box-shadow:var(--sh);
+  overflow:hidden;margin-top:9px;
+}
+.jobbox .jh{display:flex;gap:9px;align-items:center;padding:10px 13px;cursor:pointer}
+.jobbox .jh b{font-weight:570;font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 「收起全部展开的」：粘在面板顶部，只在真有卡片展开时出现（:has 判定，
+   零 JS 维护）。没有展开的卡时它整个不占位，不会平白多一个元素。 */
+.jobs .jall{
+  display:none;position:sticky;top:0;z-index:1;
+  margin-bottom:8px;padding:6px 12px;cursor:pointer;
+  background:rgba(22,29,43,.96);border:1px solid var(--line2);
+  border-radius:9px;font-size:12px;color:var(--txt2);
+  backdrop-filter:blur(10px);text-align:center;
+}
+.jobs .jall:hover{color:var(--txt);border-color:var(--acc)}
+.jobs:has(.jobbox.open) .jall{display:block}
+
+/* 原始日志限高从 230 降到 140：这一步和下面的 .steps 一起，把"展开一张卡"
+   的总高从上到下压掉约 150px —— 展开态曾经占掉 52% 视口高（实测 469/900），
+   点开想看失败原因，角色卡整片被盖住。信息一个没少，只是各自能滚。 */
+.jobbox .jb{padding:0 13px 12px;max-height:140px;overflow:auto;display:none}
+.jobbox.open .jb{display:block}
+
+/* 「每一步」清单 —— 用户明确要求能看见每一步。
+   以前只有一条进度条 + 一大片日志，问题是：不知道走到第几步、哪步最慢、
+   卡在哪、为什么失败。现在一步一行，状态一眼可辨。 */
+.jobbox .steps{
+  padding:2px 13px 10px;max-height:140px;overflow:auto;
+  display:flex;flex-direction:column;gap:1px;
+}
+.jobbox .step{
+  display:flex;align-items:baseline;gap:8px;
+  padding:5px 8px;border-radius:6px;font-size:12.5px;line-height:1.45;
+  border-left:2px solid transparent;
+}
+.jobbox .step .mk{font-size:11px;width:12px;flex:none;text-align:center}
+.jobbox .step .nm{flex:none;font-weight:550}
+.jobbox .step .nt{
+  color:var(--txt3);font-size:11.5px;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+/* 还没开始：最淡，别跟"正在做"抢注意力 */
+.jobbox .step.wait{color:var(--txt3);opacity:.55}
+.jobbox .step.wait .mk{color:var(--txt3)}
+/* 已完成：压暗，让"正在做什么"更显眼 */
+.jobbox .step.ok{color:var(--txt3);border-left-color:rgba(63,191,127,.5)}
+.jobbox .step.ok .mk{color:#5fd69b}
+/* 正在做：左侧高亮条 + 浅底 */
+.jobbox .step.now{
+  background:rgba(108,140,255,.10);color:var(--txt);
+  border-left-color:var(--acc);
+}
+.jobbox .step.now .mk{color:#9db1ff}
+/* 失败：标红，且原因必须能看全 —— 失败原因被截断 = 用户根本没法排查。
+   text-overflow 必须显式重置成 clip：只写 overflow:visible 是不够的，
+   ellipsis 会从基础规则继承下来（实测踩过）。*/
+.jobbox .step.no{
+  background:rgba(255,107,107,.09);color:#ff9d9d;
+  border-left-color:#ff6b6b;
+}
+.jobbox .step.no .nt{
+  color:#ffb3b3;white-space:normal;overflow:visible;
+  text-overflow:clip;word-break:break-all;flex:1;
+}
+pre.log{
+  margin:0;font:11.5px/1.55 ui-monospace,Consolas,monospace;color:var(--txt2);
+  white-space:pre-wrap;word-break:break-all;
+}
+.bar{height:4px;background:#1e2739;border-radius:3px;overflow:hidden;margin:0 13px 10px}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),var(--acc2));transition:.3s}
+.st{font-size:11.5px;padding:2px 8px;border-radius:20px}
+.st.running{background:rgba(108,140,255,.16);color:#9db1ff}
+.st.done{background:rgba(63,191,127,.15);color:#5fd69b}
+.st.failed{background:rgba(255,107,107,.15);color:#ff8a8a}
+.st.queued{background:rgba(154,168,189,.12);color:var(--txt3)}
+/* 已暂停：用琥珀色，跟「运行中」的蓝、"失败"的红都区分开。
+   用户必须一眼看出"这是我自己停的"，而不是"它挂了"。 */
+.st.paused{background:rgba(224,181,60,.18);color:#f0d68a}
+/* 已取消：灰掉但**不用红色** —— 它是"我不要了"，不是"它坏了"。
+   用红的话用户会去翻日志找 bug，而日志最后一行就是他自己点的那次取消。 */
+.st.cancelled{background:rgba(154,168,189,.16);color:var(--txt3);text-decoration:line-through}
+.st.interrupted{background:rgba(255,107,107,.12);color:#ffb0b0}
+.jobbox .step.cancel{
+  background:rgba(154,168,189,.1);color:var(--txt3);
+  border-left-color:#8a97ab;
+}
+.mini.jcancel{font-size:12px;line-height:1;padding:4px 8px;color:#ff9a9a}
+.mini.jcancel:hover{background:rgba(255,107,107,.18);border-color:rgba(255,107,107,.5)}
+.mini.jcancel:disabled{opacity:.45;cursor:default}
+.mini.jpause{font-size:12px;line-height:1;padding:4px 8px}
+.mini.jpause.paused{background:rgba(224,181,60,.2);border-color:#e0b53c;color:#f0d68a}
+.mini.jpause:disabled{opacity:.45;cursor:default}
+
+/* ---------- 上传 ---------- */
+.drop{
+  border:1px dashed var(--line2);border-radius:var(--r);padding:26px;text-align:center;
+  color:var(--txt3);cursor:pointer;transition:.18s;background:rgba(22,29,43,.35);
+}
+.drop:hover{border-color:var(--acc);background:rgba(108,140,255,.05)}
+.drop.on{border-color:var(--acc);background:rgba(108,140,255,.1)}
+
+.toast{
+  position:fixed;top:18px;left:50%;transform:translateX(-50%) translateY(-16px);
+  background:var(--card2);border:1px solid var(--line2);border-radius:10px;
+  padding:10px 18px;z-index:60;opacity:0;transition:.22s;box-shadow:var(--sh);font-size:13px;
+  /* ★ pointer-events:none 必须有：它 z-index 60、横在页面顶部正中，
+     而 opacity:0 的元素**照样吃鼠标事件**（透明度不影响命中测试）。
+     于是这条看不见的提示条一直压在页内导航的正中间 ——
+     真鼠标点「我的音乐/在线曲库/声音市场」时命中它，点了没反应
+     （实测：命中=DIV#toast）。它只是纯文本提示（app.js 里只写 textContent），
+     不需要接收任何点击，所以显示时也保持 none。 */
+  pointer-events:none;max-width:min(760px,92vw);
+}
+.toast.on{opacity:1;transform:translateX(-50%)}
+.toast.bad{border-color:var(--bad);color:#ffb3b3}
+.toast.good{border-color:var(--ok)}
+
+/* ---------- 一键翻唱台 ---------- */
+.stage{
+  border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;margin-bottom:24px;
+  background:linear-gradient(180deg,rgba(108,140,255,.06),rgba(22,29,43,.35));
+}
+.stage-h{display:flex;align-items:baseline;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.stage-h b{font-size:16px;letter-spacing:.3px}
+.stage-row{display:flex;gap:14px;align-items:stretch;flex-wrap:wrap}
+.slot{
+  flex:1;min-width:220px;min-height:96px;border:1px dashed var(--line2);border-radius:12px;
+  display:flex;align-items:center;justify-content:center;text-align:center;padding:14px;
+  cursor:pointer;transition:.18s;background:rgba(10,14,22,.35);
+}
+.slot:hover{border-color:var(--acc);background:rgba(108,140,255,.06)}
+.slot.on{border-color:var(--acc);background:rgba(108,140,255,.12);transform:translateY(-1px)}
+.slot-ph{color:var(--txt3);font-size:13px;line-height:1.8}
+.slot.has{border-style:solid;border-color:var(--ok)}
+.slot.has .slot-ph{color:var(--txt)}
+.slot .who{font-size:19px;font-weight:680;display:flex;align-items:center;gap:9px}
+.slot .who .av{
+  width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+  font-size:15px;font-weight:700;color:#0b0f16;
+}
+.slot .meta{font-size:12px;color:var(--txt3);margin-top:5px}
+.stage-ctl{display:flex;flex-direction:column;gap:9px;min-width:190px;justify-content:center}
+.ctl-line{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--txt2)}
+.ctl-line span{width:62px;flex:none}
+.ctl-line input[type=range]{flex:1;accent-color:var(--acc)}
+.ctl-line b{width:24px;text-align:right;color:var(--txt)}
+/* 改词：翻唱台里默认收起的那一块（展开才占地方，不影响常规翻唱的密度） */
+.ctl-sum{cursor:pointer;font-size:13px;color:var(--txt2);padding:6px 0;user-select:none}
+.ctl-sum:hover{color:var(--txt)}
+.lyric-in{padding:4px 0 2px}
+.lyric-bar{display:flex;gap:9px;align-items:center;margin-bottom:7px}
+.lyric-bar .btn{margin:0}
+.lyric-bar .hint{font-size:12px;color:var(--txt3);line-height:1.35}
+.lyric-row{display:flex;gap:9px;align-items:flex-start;margin-bottom:6px}
+.lyric-row label{width:62px;flex:none;font-size:13px;color:var(--txt2);line-height:30px}
+.lyric-row textarea{flex:1;min-width:0}
+.btn.lg{padding:11px 20px;font-size:15px;border-radius:12px}
+.btn.lg:disabled{opacity:.4;cursor:not-allowed}
+.inp.sm{padding:5px 8px;font-size:12.5px;min-width:120px}
+.stage-out{margin-top:14px;display:none;gap:10px;flex-wrap:wrap}
+.stage-out.on{display:flex}
+.outcard{
+  border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--card2);
+  min-width:230px;
+}
+.outcard .tt{font-size:12.5px;color:var(--txt3);margin-bottom:7px}
+.outcard .nm{font-size:13.5px;font-weight:620;margin-bottom:8px;word-break:break-all}
+.outcard audio{width:100%;height:32px}
+.outcard .row{margin-top:8px;gap:6px}
+
+/* 多轨试听台：四条轨 + 变速 + A/B 对比（让用户自己定位是哪一步的锅） */
+.stems{margin-top:8px;border-top:1px dashed var(--line);padding-top:8px}
+.stems .strow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+.stems .stk{font-size:11.5px;color:var(--txt3);margin-right:2px}
+.stems .stau{width:100%;height:32px}
+.stbtn{
+  font:inherit;font-size:11.5px;padding:3px 9px;border-radius:999px;cursor:pointer;
+  background:transparent;color:var(--txt3);border:1px solid var(--line);
+}
+.stbtn:hover:not(:disabled){color:var(--txt);border-color:var(--acc)}
+.stbtn.on{background:rgba(108,140,255,.16);color:var(--txt);border-color:var(--acc)}
+.stbtn.off,.stbtn:disabled{opacity:.35;cursor:not-allowed}
+.stems .ab{gap:8px}
+.stems .abr{flex:1;min-width:90px;accent-color:var(--acc)}
+.stems .abr:disabled{opacity:.4}
+.stems .abhint{font-size:11px;color:var(--txt3)}
+
+/* 客观质检徽章：音准/起伏/对齐，一眼看出这条到底行不行 */
+.qcb{
+  margin-top:7px;font-size:11.5px;padding:4px 8px;border-radius:8px;
+  background:rgba(108,140,255,.08);color:var(--txt3);border:1px solid transparent;
+}
+.qcb.ok{border-color:rgba(80,200,140,.35)}
+.qcb.bad{border-color:rgba(255,107,107,.5);color:var(--txt2);background:rgba(255,107,107,.08)}
+.qcb b{color:var(--bad)}
+.card.dragging{opacity:.5;transform:scale(.97)}
+.hint.tip{color:var(--acc2);font-size:12px}
+.poplist .opt{padding:7px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--txt)}
+.poplist .opt:hover{background:rgba(108,140,255,.14)}
+
+/* 全局拖拽提示 */
+body.dropping::after{
+  content:"松手就放进来：视频=拆成新角色　音频=放到翻唱台";
+  position:fixed;inset:0;z-index:80;display:grid;place-items:center;
+  background:rgba(8,12,20,.72);color:var(--txt);font-size:19px;font-weight:620;
+  border:3px dashed var(--acc);pointer-events:none;
+}
+
+/* ---------- 在线曲库 ---------- */
+.lib-bar{display:flex;gap:8px;margin-top:12px;align-items:center}
+.lib-bar .inp{flex:1;min-width:0}
+.lib-bar .inp.sm{flex:0 0 auto;width:auto}
+
+.lib-srcs{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 4px}
+.lib-src{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:3px 10px;border-radius:999px;font-size:12px;
+  background:var(--card);border:1px solid var(--line);color:var(--txt2);
+}
+.lib-src .dot{width:6px;height:6px;border-radius:50%;background:var(--txt3)}
+.lib-src.ok .dot{background:var(--ok)}
+.lib-src.bad{border-color:#5a2b2b;color:#ffb4b4}
+.lib-src.bad .dot{background:var(--bad)}
+
+.lib-grid{
+  display:grid;gap:10px;margin-top:10px;
+  grid-template-columns:repeat(auto-fill,minmax(232px,1fr));
+}
+.lib-card{
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  padding:12px 13px;display:flex;flex-direction:column;gap:7px;min-width:0;
+}
+.lib-card.blocked{opacity:.5}
+/* 文件已丢失的条目：照样列出来，但标红+写明原因。
+   以前后端直接不返回这一条 ⇒歌在界面上凭空消失，用户不知道丢了哪首。 */
+.lib-card.lost{border-color:rgba(255,107,107,.4);background:rgba(255,107,107,.05)}
+.lib-card .lostwhy{font-size:11.5px;color:#ff9d9d;line-height:1.5}
+.lib-card .lostwhy .lp{
+  display:block;color:var(--txt3);font-size:11px;word-break:break-all;
+  margin-top:2px;
+}
+/* 客户端提示音（历史误登记）：标成警示色 + 说清它是什么。
+   不是"藏起来"——藏起来用户就不知道曲库里为什么少了几条。 */
+.lib-card.prog{border-color:rgba(255,193,102,.42);background:rgba(255,193,102,.05)}
+.lib-card.prog .tags span:last-child{background:rgba(255,193,102,.16);color:#ffc166}
+.lib-card .progwhy{font-size:11.5px;color:#e8bb77;line-height:1.55}
+.lib-card .progwhy b{color:#ffc166}
+.lib-note.prog-bar{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  border-color:rgba(255,193,102,.4);background:rgba(255,193,102,.06);
+  color:#e8bb77;margin-bottom:10px;
+}
+.lib-note.prog-bar b{color:#ffc166}
+.lib-note.prog-bar .btn{margin-left:auto;flex:none}
+.lib-card .t{
+  font-weight:600;font-size:13.5px;line-height:1.4;
+  overflow:hidden;text-overflow:ellipsis;display:-webkit-box;
+  -webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-word;
+}
+.lib-card .a{font-size:12px;color:var(--txt2)}
+.lib-card .tags{display:flex;flex-wrap:wrap;gap:4px}
+.lib-card .tags span{
+  font-size:11px;padding:1px 7px;border-radius:5px;
+  background:var(--card2);color:var(--txt3);
+}
+.lib-card .lic{
+  display:inline-flex;align-items:center;gap:5px;font-size:11.5px;
+  padding:2px 8px;border-radius:6px;width:fit-content;max-width:100%;
+}
+.lib-card .lic.ok{background:rgba(63,191,127,.13);color:#7fdcae}
+.lib-card .lic.blocked{background:rgba(255,107,107,.13);color:#ff9d9d}
+.lib-card .lic.unknown{background:rgba(224,181,60,.13);color:#e6c877}
+.lib-card .why{font-size:11.5px;color:var(--txt3);line-height:1.45}
+.lib-card .acts{display:flex;gap:6px;margin-top:auto;padding-top:2px}
+.lib-card .acts .btn{flex:1;justify-content:center;padding:6px 8px;font-size:12.5px}
+.lib-empty{color:var(--txt3);font-size:13px;padding:14px 2px}
+.lib-spinner{color:var(--txt3);font-size:13px;padding:14px 2px}
+.lib-note{
+  margin-top:10px;font-size:12px;color:var(--txt3);line-height:1.6;
+  border-left:2px solid var(--line2);padding-left:10px;
+}
+.lib-note a{color:var(--txt2);text-decoration:underline}
+
+/* ---------- 本地音乐导入 ---------- */
+.loc-bar{display:flex;gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap}
+.loc-bar .inp{flex:1;min-width:220px}
+.loc-dirs{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 2px}
+.loc-dir{
+  font-size:12px;padding:3px 9px;border-radius:6px;cursor:pointer;
+  background:var(--card);border:1px solid var(--line);color:var(--txt2);
+}
+.loc-dir:hover{border-color:var(--acc);color:var(--txt)}
+.loc-dir.dead{opacity:.4;cursor:not-allowed}
+/* 存在但扫不到歌的目录：可点（也许只是当前空），但标出来，
+   免得用户点进去才发现白跑一趟。 */
+.loc-dir.empty{border-color:var(--line);color:var(--txt3)}
+.loc-dir i{
+  font-style:normal;font-size:10.5px;margin-left:5px;
+  color:var(--txt3);opacity:.85;
+}
+.loc-dir.empty i{color:#e6c877}
+.loc-row{
+  display:flex;align-items:center;gap:10px;padding:8px 11px;
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  font-size:13px;
+}
+.loc-row .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.loc-row .kd{font-size:11.5px;color:var(--txt3);white-space:nowrap}
+.loc-list{display:grid;gap:6px;margin-top:10px;max-height:340px;overflow:auto}
+.loc-skip{
+  font-size:11.5px;color:var(--txt3);padding:6px 2px;
+  border-left:2px solid var(--line2);margin-left:2px;
+}
+.loc-drop{
+  margin-top:10px;padding:16px;border:1.5px dashed var(--line2);border-radius:var(--r);
+  text-align:center;font-size:13px;color:var(--txt3);cursor:pointer;
+}
+.loc-drop.on{border-color:var(--acc);color:var(--txt);background:var(--card)}
+
+/* ---- 存储清理面板 ----
+   一个全屏遮罩 + 居中卡片。列表区自己滚，头部（统计 + 工具条 + 删除按钮）
+   固定不动 —— 否则勾到第 40 项想删时，按钮早就滚出屏幕了（这类"按钮在
+   视口外"的问题在别处已经栽过两次，这里从一开始就钉住）。 */
+.storebox{
+  background:var(--bg2);border:1px solid var(--line);border-radius:16px;
+  width:min(1020px,100%);max-height:92vh;display:flex;flex-direction:column;
+  box-shadow:var(--sh);overflow:hidden;
+}
+.store-h{
+  padding:18px 20px 14px;border-bottom:1px solid var(--line);
+  display:flex;gap:12px;align-items:flex-start;
+}
+.store-h>div:first-child{flex:1;min-width:0}
+.store-stat{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:8px;
+  padding:12px 20px;border-bottom:1px solid var(--line);background:var(--card);
+}
+.store-stat>div{
+  display:flex;flex-direction:column;gap:2px;
+  padding:8px 12px;background:var(--card2);border:1px solid var(--line);
+  border-radius:10px;
+}
+.store-stat span{font-size:11.5px;color:var(--txt3)}
+.store-stat b{font-size:16px;font-weight:620;letter-spacing:.2px}
+.store-stat b.ok{color:var(--ok)}
+.store-stat b.warn{color:var(--warn)}
+.store-bar{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:10px 20px;border-bottom:1px solid var(--line);
+}
+.store-bar .spacer{flex:1}
+.chk{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--txt2);white-space:nowrap}
+.inp.xs{width:56px;padding:3px 6px;font-size:12px;border-radius:7px}
+.btn.danger{background:rgba(255,107,107,.14);border-color:rgba(255,107,107,.5);color:#ff9a9a}
+.btn.danger:hover{background:rgba(255,107,107,.24);border-color:var(--bad)}
+.btn.danger:disabled{opacity:.4;background:transparent;border-color:var(--line)}
+.store-tip{
+  padding:8px 20px;font-size:12.5px;color:var(--txt2);
+  background:rgba(224,181,60,.09);border-bottom:1px solid var(--line);
+}
+.store-tip:empty{display:none}
+.store-tip.err{background:rgba(255,107,107,.1);color:#ffb0b0}
+.store-tip.ok{background:rgba(63,191,127,.1);color:#8fe0b4}
+.store-list{flex:1;min-height:120px;overflow:auto;padding:12px 20px}
+.store-g{margin-bottom:14px}
+.store-gh{
+  display:flex;align-items:center;gap:8px;cursor:pointer;
+  font-size:13.5px;font-weight:600;padding:6px 0;
+}
+.store-gh .sz{font-weight:500;color:var(--txt3);font-size:12px}
+.store-gh .caret{color:var(--txt3);font-size:11px;transition:.15s}
+.store-g.fold .caret{transform:rotate(-90deg)}
+.store-g.fold .store-gb{display:none}
+.store-gd{font-size:12px;color:var(--txt3);margin:0 0 6px}
+.store-gb{display:grid;gap:4px}
+.store-it{
+  display:flex;align-items:center;gap:10px;padding:7px 11px;
+  background:var(--card);border:1px solid var(--line);border-radius:9px;
+  font-size:12.5px;
+}
+.store-it:hover{border-color:var(--line2)}
+.store-it.picked{background:rgba(108,140,255,.1);border-color:rgba(108,140,255,.45)}
+.store-it.locked{opacity:.62;background:repeating-linear-gradient(
+  45deg,transparent,transparent 8px,rgba(255,255,255,.02) 8px,rgba(255,255,255,.02) 16px)}
+.store-it input[type=checkbox]{width:15px;height:15px;accent-color:var(--acc);cursor:pointer;flex:none}
+.store-it input[type=checkbox]:disabled{cursor:not-allowed}
+.store-it .nm{
+  flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-weight:500;
+}
+.store-it .pth{
+  font-size:11px;color:var(--txt3);font-family:ui-monospace,Consolas,monospace;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:38%;
+}
+.store-it .note{font-size:11.5px;color:var(--txt3);white-space:nowrap}
+.store-it .szz{font-variant-numeric:tabular-nums;color:var(--txt2);white-space:nowrap;flex:none}
+.store-it .lk{
+  font-size:11px;color:#ffb0b0;background:rgba(255,107,107,.12);
+  border:1px solid rgba(255,107,107,.3);border-radius:6px;padding:1px 6px;
+  white-space:nowrap;flex:none;cursor:help;
+}
+.store-it .kd{
+  font-size:10.5px;color:var(--txt3);border:1px solid var(--line2);
+  border-radius:5px;padding:0 5px;flex:none;
+}
+.store-foot{padding:10px 20px;border-top:1px solid var(--line);background:var(--card)}
+.store-foot code{
+  font-size:11.5px;background:var(--card2);padding:1px 5px;border-radius:4px;
+  color:var(--txt2);
+}
+@media (max-width:720px){
+  .store-stat{grid-template-columns:repeat(2,1fr)}
+  .store-it .pth{display:none}
+}
+
+/* ---- 通用确认框 ---- */
+.confirmbox{
+  background:var(--bg2);border:1px solid var(--line);border-radius:14px;
+  width:min(480px,100%);padding:18px 20px 16px;box-shadow:var(--sh);
+}
+.confirmbox h4{margin:0 0 8px;font-size:15px;font-weight:650}
+.confirmbox #cfBody{font-size:13px;line-height:1.7;color:var(--txt2);white-space:pre-wrap}
+.confirmbox .cf-btns{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+
+/* ---- 存储面板：悬空引用警告 ---- */
+.store-warn{
+  padding:8px 20px;font-size:12.5px;line-height:1.7;
+  background:rgba(255,107,107,.1);color:#ffb0b0;
+  border-bottom:1px solid var(--line);
+}
+.store-warn:empty{display:none}
+.store-warn b{color:#ff8a8a}
+
+/* 开了 🔓 之后，"角色正在用的模型"那一格的样子：能勾，但一眼看出是危险的 */
+.store-it.unlocked{border-color:rgba(255,107,107,.45);background:rgba(255,107,107,.07)}
+.store-it.unlocked .lk{
+  background:rgba(255,107,107,.2);color:#ffb0b0;border-color:rgba(255,107,107,.5);
+}
+
+/* ★ 收起的任务卡必须真的"矮下去"（放在文件末尾：.steps 自己的 display:flex
+   在前面，同特异性时后面的规则才作数 —— 第一次改就是因为这个没生效）。
+   以前只收了日志框，步骤清单还摊在那：一张**收起**的卡实测 195~240px，
+   两张就把左下角从 y=886 一路堆到 y=411，把角色卡、训练页签、曲库里的
+   下载按钮全压在底下（真鼠标按坐标点，打到的全是任务卡里的元素）。
+   展开后这些照样都在 —— "看得见每一步"没打折，只是不再白占地方。 */
+.jobbox .steps,
+.jobbox .jmeta{display:none}
+.jobbox.open .steps,
+.jobbox.open .jmeta{display:block}
+
+/* ---- 导入：多文件队列 + 处理方式 ---- */
+.impq{display:grid;gap:4px;margin-top:8px}
+.impq:empty{display:none}
+.improw{
+  display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12.5px;
+  background:var(--card);border:1px solid var(--line);border-radius:8px;
+}
+.improw .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.improw .sz{color:var(--txt3);font-variant-numeric:tabular-nums}
+.improw .x{
+  cursor:pointer;color:var(--txt3);padding:0 4px;border-radius:4px;flex:none;
+}
+.improw .x:hover{color:#ff8a8a;background:rgba(255,107,107,.12)}
+.impopt{display:grid;gap:6px;margin-top:6px}
+.impopt label{
+  display:flex;gap:7px;align-items:flex-start;font-size:12.5px;color:var(--txt2);
+  line-height:1.5;cursor:pointer;
+}
+.impopt input[type=radio]{margin-top:2px;accent-color:var(--acc);flex:none}
+.impopt label.off{opacity:.45}
+
+/* ------------------------------------------------ 做视频 */
+.viz-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:2px 0 12px}
+.viz-bar .inp{max-width:300px}
+/* 画面来源那一行：标签 + 下拉 + 选视频按钮 + 已选文件名 */
+.viz-lb{font-size:13px;color:var(--txt2);font-weight:600;white-space:nowrap}
+.viz-vid{font-size:12.5px;color:var(--txt3);max-width:340px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.viz-ck{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--txt2);
+  cursor:pointer;white-space:nowrap}
+.viz-ck input{accent-color:var(--acc)}
+.viz-tilde{color:var(--txt3)}
+.viz-styles{display:grid;grid-template-columns:repeat(auto-fill,minmax(196px,1fr));gap:10px}
+/* 两组样式的分组标题（手绘逐帧 / 滤镜合成）。grid-column:1/-1 让它横跨整行，
+   否则会被当成一张样式卡挤进格子里。 */
+.viz-grp{grid-column:1/-1;display:flex;align-items:baseline;gap:8px;margin:2px 0 -3px}
+.viz-grp:not(:first-child){margin-top:12px}
+.viz-grp span{font-size:12.5px;font-weight:600;color:var(--txt)}
+.viz-grp em{font-style:normal;font-size:11.5px;color:var(--txt3)}
+.viz-st{border:1px solid var(--line);border-radius:11px;padding:10px 12px;cursor:pointer;
+  background:rgba(10,14,22,.35);transition:.16s;position:relative}
+.viz-st:hover{border-color:var(--line2);background:rgba(108,140,255,.06)}
+.viz-st.on{border-color:var(--acc);background:rgba(108,140,255,.13);
+  box-shadow:0 0 0 1px var(--acc) inset}
+.viz-st .n{font-size:13.5px;font-weight:600;display:flex;align-items:center;gap:6px}
+.viz-st .n em{font-style:normal;font-size:11px;padding:1px 6px;border-radius:6px;
+  background:rgba(108,140,255,.18);color:#a9bcff;font-weight:400}
+.viz-st .d{font-size:12px;color:var(--txt2);line-height:1.6;margin-top:5px}
+.viz-st.on:after{content:"✓";position:absolute;top:8px;right:10px;color:var(--acc);
+  font-weight:700}
+.viz-note{font-size:12.5px;color:var(--txt3);margin:10px 0 0;line-height:1.6}
+.viz-note.bad{color:var(--warn)}
+.viz-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));
+  gap:12px;margin-top:14px}
+.viz-card{border:1px solid var(--line);border-radius:12px;overflow:hidden;
+  background:rgba(10,14,22,.4);display:flex;flex-direction:column}
+.viz-card video{width:100%;display:block;background:#000;max-height:260px}
+.viz-card .b{padding:9px 11px;display:flex;flex-direction:column;gap:6px}
+.viz-card .t{font-size:12.5px;word-break:break-all;line-height:1.5}
+.viz-card .m{font-size:11.5px;color:var(--txt3);display:flex;gap:8px;flex-wrap:wrap}
+.viz-card .r{display:flex;gap:7px;flex-wrap:wrap}
+.viz-empty{color:var(--txt3);font-size:13px;padding:16px 2px}
+.tone-prev{display:flex;flex-direction:column;gap:5px;margin:2px 0 12px}
+.tone-prev:empty{display:none}
+.tp-row{display:flex;gap:9px;align-items:baseline;font-size:12.5px;line-height:1.5;
+        padding:5px 9px;border-radius:7px;background:var(--bg2,rgba(127,127,127,.07))}
+.tp-n{flex:none;width:30px;color:var(--txt3);font-variant-numeric:tabular-nums}
+.tp-tag{flex:none;padding:1px 7px;border-radius:20px;font-size:11.5px;
+        background:rgba(108,140,255,.16);color:#6c8cff;white-space:nowrap}
+.tp-tag.none{background:rgba(127,127,127,.13);color:var(--txt3)}
+.tp-tag.bad{background:rgba(255,90,90,.16);color:#e0483c}
+.tp-txt{flex:1;min-width:0;word-break:break-word}
+.tone-alias{display:flex;flex-wrap:wrap;gap:4px 6px;margin-top:6px}
+.tone-alias .g{font-size:11.5px;color:var(--txt3)}
+.tone-alias .g b{color:var(--txt2);font-weight:600}

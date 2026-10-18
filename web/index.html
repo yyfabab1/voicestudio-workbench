@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VoiceStudio · 声音角色工作台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="top">
+  <div class="brand"><span class="dot"></span>VoiceStudio <small>声音角色工作台</small></div>
+  <!-- 页内导航：整页 4 屏多，没有它「我的音乐」要滚两屏才看得到 -->
+  <nav class="nav" id="navBar" aria-label="页内导航"></nav>
+  <div class="spacer"></div>
+  <div class="env" id="env"></div>
+  <button class="btn" id="btnStore" title="看看哪些训练权重和中间产物可以删，把磁盘腾出来">🧹 存储 <span id="storeBadge"></span></button>
+  <button class="btn pri" id="btnNew">＋ 导入视频</button>
+  <button class="btn" id="btnNewRole">＋ 新建角色</button>
+</div>
+
+<div class="wrap">
+  <!-- 一键翻唱台 -->
+  <div class="stage" id="secStage">
+    <div class="stage-h">
+      <b>🎤 一键翻唱台</b>
+      <span class="hint">把角色卡拖进左边，把要唱的歌拖进右边，点一下就出成品（人声和伴奏分开存）</span>
+    </div>
+    <div class="stage-row">
+      <div class="slot" id="slotSinger">
+        <div class="slot-ph" id="singerPh">① 角色<br><small>把下面角色卡拖进来</small></div>
+      </div>
+      <div class="slot" id="slotSong">
+        <div class="slot-ph" id="songPh">② 歌<br><small>拖 wav / mp3 / 视频进来</small></div>
+      </div>
+      <div class="stage-ctl">
+        <div class="ctl-line">
+          <span>变调</span>
+          <input type="range" id="sgPitch" min="-12" max="12" value="0" oninput="$('#sgPitchV').textContent=this.value">
+          <b id="sgPitchV">0</b>
+        </div>
+        <div class="ctl-line">
+          <span>歌声训练</span>
+          <select class="inp sm" id="sgQ">
+            <option value="fast">快速 50 轮</option>
+            <option value="standard" selected>标准 150 轮</option>
+            <option value="perfect">完美 300 轮</option>
+            <option value="custom">自定义</option>
+          </select>
+          <input class="inp sm" id="sgEps" type="number" min="1" max="5000" step="10" value="600"
+                 style="width:84px;display:none" title="自定义训练轮数，最多 5000">
+        </div>
+        <div class="ctl-line">
+          <span>口哨段</span>
+          <select class="inp sm" id="sgNonvocal" style="width:150px">
+            <option value="keep" selected>保留原声（推荐）</option>
+            <option value="mute">静音掉</option>
+            <option value="off">不做处理</option>
+          </select>
+        </div>
+        <div class="ctl-line">
+          <span>引擎</span>
+          <select class="inp sm" id="sgEngine" style="width:170px">
+            <option value="rvc" selected>RVC（默认 · 快）</option>
+            <option value="seedvc">Seed-VC 微调档（更像）</option>
+          </select>
+        </div>
+        <!-- 改词（可选）：默认收起。翻唱本来不需要它，展开才占地方。 -->
+        <details id="sgLyricBox" style="width:100%">
+          <summary class="ctl-sum">✍️ 改词（可选）—— 保留旋律，把歌词换成你写的</summary>
+          <div class="lyric-in">
+            <div class="lyric-bar">
+              <button class="btn sm" id="btnAutoLyric" type="button">🎧 自动识别原歌词</button>
+              <span class="hint" id="autoLyricHint">不必自己抄 —— 从歌里认出来，你再改</span>
+            </div>
+            <div class="lyric-row">
+              <label for="sgOrig">原歌词</label>
+              <textarea id="sgOrig" class="inp" rows="2"
+                placeholder="这首歌原来在唱什么。用 | 分句，尽量和换气/停顿对上"></textarea>
+            </div>
+            <div class="lyric-row">
+              <label for="sgNew">新歌词</label>
+              <textarea id="sgNew" class="inp" rows="2"
+                placeholder="要改成什么。也用 | 分句，句数和原词差不多效果最好"></textarea>
+            </div>
+            <div class="hint" id="sgLyricHint">
+              两段都填了才会改词；只填一段或都不填 = 普通翻唱。
+              改词比变声慢得多（一首 4 分钟的歌要多十几分钟），建议先「试听小样」确认。
+            </div>
+          </div>
+        </details>
+        <button class="btn pri lg" id="btnOneClick" disabled>⚡ 一键合成</button>
+      </div>
+    </div>
+    <div class="stage-out" id="stageOut"></div>
+  </div>
+
+  <div class="sec-h" id="secRoles">
+    <h2>角色</h2>
+    <span id="roleCount"></span>
+  </div>
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="emptyBox" style="display:none">
+    <b>还没有任何角色</b>
+    把一个视频丢进来，里面的每个声音会被自动分成独立角色
+  </div>
+
+  <!-- 本地音乐导入：用户自己的歌，优先级最高 -->
+  <div class="stage" id="locPanel" style="margin-top:20px">
+    <div class="stage-h">
+      <b>💿 我的音乐</b>
+      <span class="hint">导入你自己机器上的歌（下载的、自己存的、录音导出的），
+        直接用角色翻唱。<b>只登记路径不复制文件</b>，所以不占额外空间、原文件也保持在原地可继续分轨编辑。<br>
+        网易云客户端下载的 <b>.ncm</b>、以及它的 <b>VIP 歌曲目录</b> 都能用：扫描会认出来，
+        导入时自动解密成 mp3/flac（<b>你的原文件不会被改动</b>，解密出来的那份放在 data/music）。</span>
+    </div>
+    <div class="loc-bar">
+      <input class="inp" id="locPath" placeholder="填音乐文件夹的完整路径，比如 C:\Users\你的名字\Music"
+             onkeydown="if(event.key==='Enter')locScan()">
+      <button class="btn pri" id="btnLocScan" onclick="locScan()">扫描</button>
+    </div>
+    <div class="loc-dirs" id="locDirs"></div>
+    <div class="loc-drop" id="locDrop">把音频文件拖到这里，或点此选择文件</div>
+    <div id="locOut"></div>
+  </div>
+
+  <!-- 做视频 -->
+  <div class="stage" id="secVideos" style="margin-top:20px">
+    <div class="stage-h">
+      <b>🎬 做视频</b>
+      <span class="hint">把成品（或任意音频）渲染成能直接发出去的 MP4 —— 频谱画面 + 中文歌词 + 歌名标题。
+        全程用本机 ffmpeg 渲染，<b>不装任何新东西</b>。</span>
+    </div>
+
+    <!-- 画面来源：这是「把声音配进我自己的视频」的入口。
+         老板问「加进去是不是遮挡了本来的画面」—— 答案取决于这一栏选哪个：
+         「只换音轨」画面一个像素都不动；「叠加」画面还在、只让亮的地方更亮。 -->
+    <div class="viz-bar">
+      <span class="viz-lb">画面来源</span>
+      <select class="inp" id="vizMode" onchange="vizModeChange()"></select>
+      <button class="btn" id="btnVizVideo" onclick="vizPickVideo()">选我的视频…</button>
+      <span class="viz-vid" id="vizVideoName"></span>
+    </div>
+
+    <div class="viz-bar">
+      <select class="inp" id="vizSrc" title="要配画面的音频"></select>
+      <select class="inp sm" id="vizSize" title="画幅：横屏发 B 站，竖屏发抖音"></select>
+      <select class="inp sm" id="vizFps" title="帧率"></select>
+      <label class="viz-ck"><input type="checkbox" id="vizPart" onchange="vizPartToggle()"> 只做一段</label>
+      <input class="inp sm" id="vizStart" type="number" min="0" step="1" value="0"
+             disabled style="width:74px" title="从第几秒开始（秒）">
+      <span class="viz-tilde">–</span>
+      <input class="inp sm" id="vizDur" type="number" min="3" step="1" value="30"
+             disabled style="width:74px" title="做多长（秒）">
+      <button class="btn pri" id="btnVizGo" onclick="vizGo()">开始制作</button>
+    </div>
+
+    <div class="viz-styles" id="vizStyles"></div>
+    <div class="viz-note" id="vizNote"></div>
+    <div class="viz-list" id="vizList"></div>
+  </div>
+
+  <!-- 在线曲库 -->
+  <div class="stage" id="libPanel" style="margin-top:20px">
+    <div class="stage-h">
+      <b>🎵 在线曲库</b>
+      <span class="hint">搜开放授权的歌，一键导进翻唱台。<b>只放行可商用授权</b>，禁商用/禁改编的会置灰并写明原因。</span>
+    </div>
+    <div class="lib-bar">
+      <input class="inp" id="libQ" placeholder="搜歌名或风格：piano / rock / love / 电子…"
+             onkeydown="if(event.key==='Enter')libSearch()">
+      <select class="inp sm" id="libLic" onchange="libSearch()">
+        <option value="by">可商用（CC-BY / PD）</option>
+        <option value="all">全部（含禁商用，会标注）</option>
+      </select>
+      <select class="inp sm" id="libDeep" title="拉得越多越慢（站点单页上限 29 首，多要只能靠翻页）">
+        <option value="0">标准 · 29 首</option>
+        <option value="2" selected>多搜 · 87 首</option>
+        <option value="4">深挖 · 145 首</option>
+        <option value="6">狠挖 · 203 首</option>
+        <option value="8">拉满 · 261 首</option>
+      </select>
+      <button class="btn pri" id="btnLibSearch" onclick="libSearch()">搜索</button>
+    </div>
+    <div class="lib-srcs" id="libSrcs"></div>
+    <div class="lib-grid" id="libGrid">
+      <div class="hint" style="padding:8px 2px">输入关键词开始搜。</div>
+    </div>
+    <div class="sec-h" style="margin:18px 0 10px">
+      <h2 style="font-size:14px">已导入 <span id="libCount"></span></h2>
+    </div>
+    <div class="lib-grid" id="libMine"></div>
+  </div>
+
+  <!-- 声音市场：别人训练好的模型 -->
+  <div class="stage" id="mktPanel" style="margin-top:20px">
+    <div class="stage-h">
+      <b>🎭 声音市场</b>
+      <span class="hint">搜 Hugging Face 上<b>公开分享</b>的音色模型，挑中哪个下哪个，
+        下完自动变成能唱的角色（不用自己训练）。<br>
+        边界：这里<b>不破解任何付费内容</b>，只索引公开可下载的模型；怎么用受它自己的
+        license 约束（每张卡片上都标了），<b>商用前请自己看许可</b>。<br>
+        装完的角色<b>没有素材</b>（那是别人训的权重），所以能直接唱歌，但 Seed-VC
+        微调需要你自己的素材。索引库（.index）有的会一起装上，没有也能唱，只是音色检索弱一点。<br>
+        <b>合集仓库</b>（卡片上标「合集 · N 个角色」的）一个仓库里就躺着整个作品的角色，
+        点<b>「装全部」</b>可以一口气全装完 —— 按钮上会写清一共多少个、多大，你自己决定。</span>
+    </div>
+    <div class="lib-bar">
+      <input class="inp" id="mktQ" placeholder="搜角色或作品：Alastor / Twilight Sparkle / Miku / Genshin…"
+             onkeydown="if(event.key==='Enter')mktSearch()">
+      <button class="btn pri" id="btnMktSearch" onclick="mktSearch()">搜索</button>
+    </div>
+    <div class="lib-srcs" id="mktTags" style="margin-bottom:6px"></div>
+    <div class="lib-srcs" id="mktWorks"></div>
+    <div class="lib-grid" id="mktGrid">
+      <div class="hint" style="padding:8px 2px">点上面的作品（小马宝莉 / 地狱客栈 / 原神…）直接按角色搜，
+        或用搜索框自己找。想随便逛就点「🔥 按标签逛」——那里面有几百个现成的音色模型。</div>
+    </div>
+    <div id="mktMore" style="margin:12px 0;text-align:center"></div>
+    <div class="lib-note" id="mktNote"></div>
+    <div class="sec-h" style="margin:18px 0 10px">
+      <h2 style="font-size:14px">已装的角色 <span id="mktCount"></span></h2>
+    </div>
+    <div class="lib-grid" id="mktMine"></div>
+  </div>
+</div>
+
+<!-- 导入视频 -->
+<div class="mask" id="maskImport">
+  <div style="display:grid;place-items:center;height:100%;padding:24px">
+    <div style="background:var(--bg2);border:1px solid var(--line);border-radius:16px;width:min(560px,100%);padding:22px">
+      <h3 style="margin:0 0 4px" id="impTitle">导入视频</h3>
+      <p style="color:var(--txt3);font-size:13px;margin:0 0 16px">
+        可以一次选好几个视频：同一个人的几段素材会<b>合成一个模型</b>。<br>
+        素材越干净越好：5 分钟以上、说话人固定最佳。
+      </p>
+      <div class="drop" id="drop">点击选择视频（可按住 Ctrl/Shift 选多个），或把文件拖到这里</div>
+      <div id="fileInfo" style="margin-top:12px;font-size:13px;color:var(--txt2)"></div>
+      <div id="impQueue" class="impq"></div>
+
+      <div class="fld" style="margin-top:14px">
+        <label>这些素材怎么处理</label>
+        <div class="impopt">
+          <label><input type="radio" name="impMode" value="match" checked>
+            <span><b>自动认人</b>（推荐）：先按声音分人，再认出「这是库里哪个角色」
+              —— 认得就把素材并到那个角色上，认不出才新建。别人的素材不会被混进来</span></label>
+          <label><input type="radio" name="impMode" value="auto">
+            <span>按声音自动分（多人自动分成多个角色；同一个人的会合并到一起，
+              <b>但不会并进已有角色</b>，每次都新建）</span></label>
+          <label><input type="radio" name="impMode" value="merge">
+            <span>全部合成<b>一个</b>角色（这些视频里都是同一个人）</span></label>
+          <label><input type="radio" name="impMode" value="per_video">
+            <span>每个视频各自一个角色</span></label>
+          <label id="impAppendWrap" style="display:none"><input type="radio" name="impMode" value="append">
+            <span>追加到已有角色 <select class="inp xs" id="impAppendTo"></select></span></label>
+        </div>
+      </div>
+      <div class="row" style="margin-top:16px">
+        <label class="fld" style="flex:1;min-width:130px;margin:0">
+          <label>人数（留空=自动判断）</label>
+          <input class="inp" id="inpN" type="number" min="1" max="8" placeholder="自动">
+        </label>
+        <label class="fld" style="flex:1;min-width:130px;margin:0">
+          <label>训练质量</label>
+          <select class="inp" id="inpQ">
+            <option value="fast">快速 · 15 轮（先试听）</option>
+            <option value="standard" selected>标准 · 30 轮（推荐）</option>
+            <option value="perfect">完美 · 60 轮（最像，最慢）</option>
+            <option value="custom">自定义…</option>
+          </select>
+        </label>
+        <label class="fld" id="inpQepsWrap" style="flex:1;min-width:110px;margin:0;display:none">
+          <label>轮数（最多 200）</label>
+          <input class="inp" id="inpQeps" type="number" min="1" max="200" step="1" value="45">
+        </label>
+      </div>
+      <div class="hint" style="margin-top:8px">
+        说话模型不叠加：每个角色都是拿当前素材从头训一遍。轮数上限 200（再往上容易过拟合）。
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;margin:14px 0 0;font-size:13px;color:var(--txt2)">
+        <input type="checkbox" id="inpUvr" checked> 去掉背景音乐和噪音（UVR5）
+      </label>
+      <label style="display:flex;gap:8px;align-items:center;margin:8px 0 0;font-size:13px;color:var(--txt2)">
+        <input type="checkbox" id="inpTrain" checked> 分离后立刻训练每个角色
+      </label>
+      <div class="row" style="justify-content:flex-end;margin-top:20px">
+        <button class="btn ghost" onclick="closeMask('maskImport')">取消</button>
+        <button class="btn pri" id="btnStartImport" disabled>开始拆解</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 存储清理 -->
+<div class="mask" id="maskStore">
+  <div style="display:grid;place-items:center;height:100%;padding:20px">
+    <div class="storebox">
+      <div class="store-h">
+        <div>
+          <h3 style="margin:0">🧹 存储清理</h3>
+          <div class="hint" style="margin-top:4px">
+            训练一次歌声模型会在两个地方各留一串 55MB 的权重，拆一个视频留 250MB 中间产物。
+            这里把它们全列出来 —— <b>角色正在用的那份会被锁住</b>，剩下的可以放心删。
+          </div>
+        </div>
+        <button class="btn ghost sm" onclick="closeMask('maskStore')" style="margin-left:12px">关闭</button>
+      </div>
+
+      <div class="store-stat" id="storeStat">
+        <div title="本机实测：写文件会立刻掉，删掉却不立刻回涨（有的盘要过一阵才更新）。所以删完先看「这里共占」和提示里的「释放了多少」，那个是准的。"><span>磁盘剩余 ⓘ</span><b id="stFree">-</b></div>
+        <div><span>这里共占</span><b id="stTotal">-</b></div>
+        <div><span>可清理</span><b id="stReclaim" class="ok">-</b></div>
+        <div><span>已勾选</span><b id="stPicked" class="warn">0 项 · 0 B</b></div>
+      </div>
+
+      <div class="store-bar">
+        <button class="btn sm" id="stRescan">重新扫描</button>
+        <button class="btn sm" id="stPickSafe">勾选安全项</button>
+        <button class="btn sm ghost" id="stClear">清空选择</button>
+        <label class="chk" id="stForceWrap" title="默认锁住「某个角色正在用的模型」—— 删了它这个角色就不能唱/说了，得重训。
+确定要连之前训好的模型一起清掉时，打开这个开关，那些格子就能勾了。
+（底模和正在跑的任务**永远**锁着，开这个也不放。）"
+               style="color:var(--warn);border:1px dashed rgba(224,181,60,.5);border-radius:8px;padding:3px 8px">
+          <input type="checkbox" id="stForce"> 🔓 也允许删「正在用的模型」
+        </label>
+        <button class="btn sm" id="stPrune" title="按下面的设置，把中间存档和分离缓存压回上限">一键瘦身</button>
+        <div class="spacer"></div>
+        <label class="chk">保留最近
+          <input class="inp xs" id="stKeep" type="number" min="0" max="20" step="1" value="2">
+          份中间存档</label>
+        <label class="chk">缓存上限
+          <input class="inp xs" id="stCacheMax" type="number" min="0.5" max="50" step="0.5" value="3">
+          GB</label>
+        <button class="btn sm danger" id="stDel" disabled>删除选中</button>
+      </div>
+
+      <div class="store-tip" id="storeTip"></div>
+
+      <div class="store-warn" id="storeWarn"></div>
+
+      <div class="store-list" id="storeList">
+        <div class="hint" style="padding:20px 2px">正在扫描…</div>
+      </div>
+
+      <div class="store-foot">
+        <span class="hint">删除是<b>不可撤销</b>的（不进回收站，直接腾空间）。
+        每次删除都会在 <code>data/_trash_log/</code> 留一份清单，真删错了至少知道删过什么。</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 角色详情 -->
+<div class="mask" id="maskRole"></div>
+<div class="drawer" id="drawer">
+  <div class="dhead">
+    <div class="avatar" id="dAvatar">A</div>
+    <div style="flex:1;min-width:0">
+      <div style="display:flex;gap:8px;align-items:center">
+        <input class="inp" id="dName" style="font-size:16px;font-weight:620;border-color:transparent;background:transparent;padding:2px 4px">
+      </div>
+      <div id="dSub" style="color:var(--txt3);font-size:12.5px;margin-top:3px"></div>
+    </div>
+    <button class="btn ghost sm" onclick="closeDrawer()">关闭</button>
+  </div>
+  <div class="tabs">
+    <div class="tab on" data-pane="paneInfo">简介</div>
+    <div class="tab" data-pane="paneSeg">素材 <span id="segBadge" style="color:var(--txt3)"></span></div>
+    <div class="tab" data-pane="paneSpeak">说话</div>
+    <div class="tab" data-pane="paneSing">唱歌</div>
+    <div class="tab" data-pane="paneTrain">训练</div>
+    <div class="tab" data-pane="paneOut">成品 <span id="outBadge" style="color:var(--txt3)"></span></div>
+  </div>
+  <div class="dbody">
+    <!-- 简介 -->
+    <div class="pane on" id="paneInfo">
+      <!-- 「现在能干什么 / 还差什么」，由 paintAbilityBar() 按后端 ability 现算填 -->
+      <div class="abk-bar" id="abInfo"></div>
+      <div class="fld">
+        <label>角色介绍（会显示在卡片上）</label>
+        <textarea class="inp" id="dIntro" placeholder="这个声音是谁？什么性格？用来做什么？"></textarea>
+      </div>
+      <div class="fld">
+        <label>类型</label>
+        <div class="row">
+          <button class="mini" id="kindSpeech" onclick="setKind('speech')">说话</button>
+          <button class="mini" id="kindSinging" onclick="setKind('singing')">唱歌</button>
+        </div>
+        <div class="hint" id="kindHint"></div>
+      </div>
+      <div class="fld">
+        <label>代表色</label>
+        <div class="row" id="colors"></div>
+      </div>
+      <div class="row">
+        <button class="btn pri" onclick="saveMeta()">保存</button>
+        <!-- 追加素材：选中多个视频也行，它们会被切成片段**加进这个角色**，
+             原来的片段和人工校对过的文本都保留（不是替换）。 -->
+        <button class="btn" onclick="openAppend(CUR && CUR.id)">＋ 追加素材（新视频）</button>
+        <button class="btn ghost" style="margin-left:auto;color:#ff8a8a" onclick="delRole()">删除角色</button>
+      </div>
+    </div>
+
+    <!-- 素材 -->
+    <div class="pane" id="paneSeg">
+      <div class="hint" style="margin-bottom:10px">
+        这里是这个角色的原始切片和识别出的文字。<b>文字可以直接改</b>——改完再训练，模型学的就是改过的版本。
+        标着「参考」的那段决定合成时的音色和语气，可以换。
+      </div>
+      <div class="seglist" id="segList"></div>
+    </div>
+
+    <!-- 说话 -->
+    <div class="pane" id="paneSpeak">
+      <div class="abk-bar" id="abSpeak"></div>
+      <div class="fld">
+        <label>要让 TA 说的话（一行一句）</label>
+        <textarea class="inp" id="speakText" style="min-height:130px"
+          placeholder="[愤怒]你怎么敢这么做！&#10;（温柔）别怕，我在这里。&#10;这句话不加标签，就是平时的语气。"></textarea>
+      </div>
+      <details id="toneHelpBox" style="width:100%;margin:2px 0 10px">
+        <summary class="ctl-sum">🎭 语气怎么写 —— 在句首加方括号就行（点开看全部写法）</summary>
+        <div class="hint" id="toneHelp" style="padding:8px 10px">读取中…</div>
+      </details>
+      <div id="speakPreview" class="tone-prev"></div>
+      <div class="row">
+        <button class="btn pri" id="btnSpeak" onclick="doSpeak()">合成</button>
+        <span class="hint" id="speakHint"></span>
+      </div>
+      <div id="speakOut" style="margin-top:16px"></div>
+    </div>
+
+    <!-- 唱歌 -->
+    <div class="pane" id="paneSing">
+      <!-- 两个来源：翻唱现成的歌 / 凭空写一首新歌。
+           放成并排两个 tab 而不是各自一个面板，是因为下游完全一样
+           （都要过 分离→换声→混音→质检），用户看到的差别只有"歌从哪来"。 -->
+      <div class="row" style="gap:8px;margin-bottom:14px">
+        <button class="mini on" id="smCover" onclick="showSingMode('cover')">翻唱现成的歌</button>
+        <button class="mini" id="smNew" onclick="showSingMode('new')">写一首新歌</button>
+      </div>
+
+      <div id="newSongBlock" style="display:none">
+        <div class="hint" style="margin-bottom:12px">
+          不用先有歌：写一段<b>风格</b>和<b>歌词</b>，YuE2 会作曲、编曲、演唱，
+          再用这个角色的音色重唱一遍。<br>
+          风格那句英文按这个顺序写：<b>语言 → 流派与年代 → 人声（音区/性别/唱法）→
+          具体乐器 → 情绪 2~4 词 → 制作 → N BPM</b>。<br>
+          歌词里用 <b>[Verse 1] / [Chorus] / [Bridge]</b> 这类标签标段落，每段之间空一行。
+        </div>
+        <label class="fld" style="margin-bottom:10px">
+          <label>风格（English）</label>
+          <input class="inp" id="nsStyle"
+                 value="chinese cinematic pop, female vocal, soft breathy delivery, piano and warm strings, bittersweet, wide production, 84 BPM">
+        </label>
+        <label class="fld" style="margin-bottom:10px">
+          <label>歌词</label>
+          <textarea class="inp" id="nsLyrics" rows="9">[Verse 1]
+雨落下来的时候 城市很安静
+一盏灯 亮在旧窗前
+
+[Pre-Chorus]
+我数着 那些没说完的话
+
+[Chorus]
+风吹过 你的名字
+散在很远的夏天
+我还在这里 等一句回声
+
+[Outro]
+雨停了 天还没亮</textarea>
+        </label>
+        <div class="row" style="gap:12px;flex-wrap:wrap">
+          <label class="fld" style="flex:.6;min-width:110px;margin:0">
+            <label>时长（秒）</label>
+            <input class="inp" id="nsDur" type="number" value="120" min="15" max="360" step="5">
+          </label>
+          <label class="fld" style="flex:1;min-width:150px;margin:0">
+            <label>变调（半音）</label>
+            <input class="inp" id="nsPitch" type="number" value="0" min="-24" max="24">
+          </label>
+          <label class="fld" style="flex:1;min-width:130px;margin:0">
+            <label>音色相似度（索引强度）</label>
+            <input class="inp" id="nsIdx" type="number" value="0.75" min="0" max="1" step="0.05">
+          </label>
+        </div>
+        <div class="row" style="margin-top:14px;gap:10px;flex-wrap:wrap">
+          <button class="btn pri" id="btnNewSong" onclick="doNewSong()">写歌并用这个角色唱</button>
+        </div>
+        <div class="hint" id="yue2State" style="margin-top:10px"></div>
+        <div class="hint" style="margin-top:8px">
+          跑起来后：<b>YuE2 作曲演唱</b>（约 1~2 倍歌长，60 秒的歌约半分钟）→
+          <b>分离人声与伴奏</b> → <b>RVC 换成角色音色</b> → <b>混音 + 质检</b>。
+          最终成品里不会混进 YuE2 那个占位人声。
+        </div>
+      </div>
+
+      <div id="singBlock">
+        <div class="abk-bar" id="abSing"></div>
+        <div class="hint" style="margin-bottom:12px">
+          唱歌走的是另一套模型（RVC）：它能把任意一首歌的唱腔换成这个角色的音色，
+          但<b>曲调和歌词不变</b>。说话模型做不了这件事。
+        </div>
+        <div class="drop" id="dropSong" style="padding:18px">选择一首歌（wav/mp3）</div>
+        <div id="songInfo" style="margin-top:10px;font-size:13px;color:var(--txt2)"></div>
+        <div class="row" style="margin-top:14px;flex-wrap:wrap;gap:12px">
+          <label class="fld" style="flex:1.4;min-width:180px;margin:0">
+            <label>变调（半音）</label>
+            <select class="inp" id="selPitch" onchange="onPitchPick()">
+              <option value="auto" selected>自动 —— 按原唱与角色音域量出来</option>
+              <option value="0">不变调（0）</option>
+              <option value="12">升八度（+12）· 男声唱女声原曲</option>
+              <option value="-12">降八度（−12）· 女声唱男声原曲</option>
+              <option value="custom">自定义…</option>
+            </select>
+          </label>
+          <label class="fld" id="pitchCustomWrap" style="flex:.7;min-width:110px;margin:0;display:none">
+            <label>自定义半音</label>
+            <input class="inp" id="inpPitch" type="number" value="0" min="-24" max="24">
+          </label>
+          <label class="fld" style="flex:1;min-width:130px;margin:0">
+            <label>音色相似度（索引强度）</label>
+            <input class="inp" id="inpIdx" type="number" value="0.75" min="0" max="1" step="0.05">
+          </label>
+          <label class="fld" style="flex:1;min-width:150px;margin:0">
+            <label>唱歌引擎</label>
+            <select class="inp" id="selEngine">
+              <option value="rvc" selected>RVC（默认 · 快）</option>
+              <option value="seedvc">Seed-VC 微调档（更像，慢 2~3 分钟）</option>
+            </select>
+          </label>
+        </div>
+        <div class="row" style="margin-top:16px;gap:10px;flex-wrap:wrap">
+          <button class="btn" id="btnPreview" onclick="doSing(true)" disabled>先听 30 秒样片（快）</button>
+          <button class="btn pri" id="btnSing" onclick="doSing(false)" disabled>整首转换</button>
+        </div>
+        <div class="hint" style="margin-top:10px">
+          <b>建议先点「先听 30 秒样片」</b>：整首转换本机要十几分钟，样片一两分钟就能
+          听出音高和音色对不对；不满意改完再跑整首。<br>
+          跑起来后任务卡上有 <b>⏸ 暂停</b>：点一下会把后台进程真的挂起（显卡立刻空出来），
+          再点 ▶ 从原地接着跑。<br>
+          转换链路是<b>先分离人声和伴奏</b>，只对干声换音色，再用伴奏混音 ——
+          所以成品里不会混进原唱。
+        </div>
+      </div>
+    </div>
+
+    <!-- 训练 -->
+    <div class="pane" id="paneTrain">
+      <div class="fld">
+        <label>说话模型（GPT-SoVITS）</label>
+        <div class="row">
+          <label class="fld" style="flex:1;min-width:150px;margin:0">
+            <label>训练质量</label>
+            <select class="inp" id="inpQ2">
+              <option value="fast">快速 · 15 轮</option>
+              <option value="standard" selected>标准 · 30 轮（推荐）</option>
+              <option value="perfect">完美 · 60 轮（最像，最慢）</option>
+              <option value="custom">自定义…</option>
+            </select>
+          </label>
+          <label class="fld" id="epsWrap2" style="width:130px;margin:0;display:none">
+            <label>轮数（最多 200）</label>
+            <input class="inp" id="eps2" type="number" min="1" max="200" step="1" value="45" />
+          </label>
+        </div>
+        <div class="hint" style="margin-top:8px">
+          越多轮音色越像；训完会自动出声体检，不合格自动回退到更早的权重。<br>
+          <b>说话模型不吃「续训」</b>：点一次就是用当前素材<b>从头重训一遍</b>，
+          轮数不变重训的结果和上次基本一样（不会越训越像）。想更好：把轮数调高，或补更多/更干净的素材。<br>
+          说话模型轮数上限 200：再往上容易过拟合，合成会发疯（体检也拦不住的那种）。
+        </div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn pri" onclick="doTrain()">开始训练（用当前素材重训一遍）</button>
+          <span class="hint" id="trainHint"></span>
+        </div>
+        <div class="hint" id="modelInfo" style="margin-top:10px"></div>
+      </div>
+      <div class="fld" style="border-top:1px solid var(--line);padding-top:16px">
+        <label>歌声模型（RVC）</label>
+        <div class="hint" style="margin-bottom:10px">
+          需要这个角色有 10 段以上、合计 1 分钟以上的干净干声（唱歌或说话都行）。
+          训练比说话模型慢得多，通常要几十分钟。<br>
+          <b>RVC 可以接着训</b>：轮数是「训到第几轮」，不是「再训几轮」——
+          已经训到 300 之后再填 600，会从 300 接着往下练；同样填 300 就没有额外可训的轮数。
+        </div>
+        <div class="row">
+          <label class="fld" style="flex:1;min-width:150px;margin:0">
+            <label>训练质量</label>
+            <select class="inp" id="inpQ3">
+              <option value="fast">快速 · 50 轮</option>
+              <option value="standard" selected>标准 · 150 轮（推荐）</option>
+              <option value="perfect">完美 · 300 轮（最像）</option>
+              <option value="custom">自定义…（可以超过 300）</option>
+            </select>
+          </label>
+          <label class="fld" id="epsWrap3" style="width:130px;margin:0;display:none">
+            <label>轮数（最多 5000）</label>
+            <input class="inp" id="eps3" type="number" min="1" max="5000" step="10" value="600" />
+          </label>
+          <button class="btn" id="btnRvc" onclick="doRvc()">训练歌声模型</button>
+        </div>
+        <label class="chkbox" style="margin-top:10px">
+          <input type="checkbox" id="rvcRestart" />
+          <span>从头重训（换用底模）—— <b class="warn">歌声不跟调、变调没反应时勾这个</b>。
+            RVC 只在没有旧断点时才会加载底模，所以直接续训是修不好的；
+            旧断点会挪到 logs 下保留，预处理好的特征会复用。</span>
+        </label>
+        <div class="row" style="margin-top:6px"><span class="hint" id="rvcInfo"></span></div>
+        <div class="row"><span class="hint" id="rvcState"></span></div>
+      </div>
+      <div class="fld" style="border-top:1px solid var(--line);padding-top:16px">
+        <label>音色微调（Seed-VC · 44.1kHz）</label>
+        <div class="hint" style="margin-bottom:10px">
+          在<b>已有歌声模型（RVC）的基础上</b>再抬一档音色：RVC 负责唱得上、跟得住调，
+          Seed-VC 负责<b>更像这个人</b>。实测音色分数 0.71 → <b>0.77</b>，是换引擎带来的。<br>
+          ⚠ 两个实话：<b>① 44.1k 只是容器提升</b> —— 16k 以上频段的能量只有原唱的
+          二十分之一，有效带宽还是 12k 左右，别指望"高频更亮"；
+          <b>② 微调是绑角色的</b>，换一个角色就要重训一次（本机约 5~8 分钟）。
+        </div>
+        <div class="row">
+          <label class="fld" style="flex:1;min-width:150px;margin:0">
+            <label>步数</label>
+            <select class="inp" id="svSteps">
+              <option value="200">200 步（快，试一下）</option>
+              <option value="400">400 步</option>
+              <option value="600" selected>600 步（推荐 · 实测最优）</option>
+              <option value="1000">1000 步（可能过拟合）</option>
+            </select>
+          </label>
+          <button class="btn" id="btnSeedvc" onclick="doSeedvc()">开始微调</button>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <label class="fld" style="flex:1;min-width:170px;margin:0">
+            <label>唱歌时用哪一档</label>
+            <select class="inp" id="svCkpt" onchange="pickSeedvc()"></select>
+          </label>
+        </div>
+        <div class="row" style="margin-top:8px"><span class="hint" id="svState"></span></div>
+        <div class="hint" style="margin-top:6px">
+          步数不是越多越好：实测 <b>600 步是拐点</b>（音色 / 原唱残留 / 咬字三项全胜），
+          1000 步咬字反而变糊、亮度掉。每存一档约 2.2GB。
+        </div>
+      </div>
+    </div>
+
+    <!-- 成品 -->
+    <div class="pane" id="paneOut">
+      <div id="outList"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 通用确认框。
+     取消任务这类"点了就没了"的动作必须问一句，但不能用原生 confirm()：
+     它一弹出就把页面冻住（任务进度也跟着停刷），而且没法带一个
+     "同时删掉中间产物"的勾选项。自己画一个，顺便让验收脚本能真的去点它。 -->
+<div class="mask" id="maskConfirm" style="z-index:80">
+  <div style="display:grid;place-items:center;height:100%;padding:20px">
+    <div class="confirmbox">
+      <h4 id="cfTitle">确认</h4>
+      <div id="cfBody" class="hint"></div>
+      <label class="chk" id="cfChkWrap" style="display:none;margin-top:10px">
+        <input type="checkbox" id="cfChk"><span id="cfChkText"></span>
+      </label>
+      <div class="cf-btns">
+        <button class="btn sm ghost" id="cfNo">取消</button>
+        <button class="btn sm danger" id="cfYes">确定</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="jobs" id="jobs">
+  <!-- 只在"有卡片展开着"时才出现（CSS :has 控制），一键把展开的都收起来。
+       任务面板是 fixed 浮层，展开几张卡就盖住一片内容 —— 收起的入口要放在
+       手边，而不是让用户一张张去点标题。 -->
+  <div class="jall" id="jall" onclick="jobsCollapseAll()">收起全部展开的</div>
+</div>
+<div class="toast" id="toast"></div>
+<!-- multiple：一次可以选好几个视频（同一个人的几期节目 → 合成一个模型） -->
+<input type="file" id="filePicker" style="display:none" multiple>
+<script src="/static/app.js"></script>
+<script src="/static/lib.js"></script>
+<script src="/static/loc.js"></script>
+<script src="/static/mkt.js"></script>
+<script src="/static/viz.js"></script>
+<!-- ★ restoreJobs() 以前**只定义、从没被调用**：刷新页面后正在跑的训练
+     从界面上彻底消失（后端还在写 ckpt、显卡还在转，用户却什么都看不到），
+     于是"刷新一下任务就没了"这个老毛病其实一直没修好 —— 这一轮连
+     「取消」按钮都跟着一起消失了（没有任务卡 ⇒ 没有按钮）。
+     它在 app.js 里是 async，这里不用 await：让它在后台把任务接回来即可。 -->
+<script>loadLibrary(); locInit(); mktInit(); restoreJobs(); navInit(); vizInit();</script>
+</body>
+</html>
