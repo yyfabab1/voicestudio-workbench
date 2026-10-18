@@ -847,7 +847,7 @@ PermissionError: [Errno 13] Permission denied: ...\logs\<exp>\0_gt_wavs\14_2.spe
 numpy / websocket 只装在 venv 里：
 
 ```
-<你的托管 runtime>\envs\default\Scripts\python.exe verify_music.py
+%USERPROFILE%\.workbuddy\binaries\python\envs\default\Scripts\python.exe verify_music.py
 ```
 
 （`verify_qc_ruler.py` / `verify_nonvocal.py` 例外：它们要 `soundfile` + `librosa`，
