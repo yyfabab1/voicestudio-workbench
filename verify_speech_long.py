@@ -42,18 +42,42 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+import studio  # noqa: E402
+
 GSV = (r"D:\BaiduNetdiskDownload\GPT-SoVITS(1)\v5最新版"
        r"\GPT-SoVITS-v5-20261005nvidia50x0\GPT-SoVITS-v2pro-20261006nvidia50x0")
 PY = os.path.join(GSV, "runtime", "python.exe")
 STAGES = os.path.join(HERE, "stages")
 WORK = os.path.join(HERE, "_speechlong")
-ROLE = "rfdb2828c"
+def pick_role():
+    """★ 不能写死角色 id，权重名也不能拼出来。
+
+    这里原本是 `ROLE = "rfdb2828c"` + `CKPT = .../ROLE + "-e150.ckpt"`。
+    2026-10-18 清掉那批角色之后，这个 id 已经不在库里，而且就算换对了角色，
+    权重也不一定叫 e150（大帝现在是 e60）⇒ 两条一起红，都不是产品问题。
+    （跟 `verify_tone` / `verify_train_rounds_ui` 里写死「阿塔尼斯」是同一类失误。）
+
+    ⇒ 每次现挑：素材最多的那个、优先有 GPT 权重的；权重路径**从角色记录里读**，
+      不靠拼名字。
+    """
+    try:
+        rs = [r for r in (studio.load_roles().get("roles") or [])
+              if not r.get("pending")]
+    except Exception:                                             # noqa: BLE001
+        return "", ""
+    if not rs:
+        return "", ""
+    with_ckpt = [r for r in rs if (r.get("model") or {}).get("ckpt")]
+    r = max(with_ckpt or rs, key=lambda x: len(x.get("segments") or []))
+    return (r.get("id") or ""), ((r.get("model") or {}).get("ckpt") or "")
+
+
+ROLE, _CKPT_REL = pick_role()
 S2G = "GPT_SoVITS/pretrained_models/gsv-v5-pretrained/s2Gv5turbo.pth"
-CKPT = os.path.join(GSV, "GPT_weights_v5turbo", ROLE + "-e150.ckpt")
+CKPT = os.path.join(GSV, *_CKPT_REL.split("/")) if _CKPT_REL else ""
 WHISPER = os.path.join(HERE, "models", "faster-whisper-medium")
 
 import tone  # noqa: E402
-import studio  # noqa: E402
 
 OK, BAD = [], []
 
