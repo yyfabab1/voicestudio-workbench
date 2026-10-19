@@ -86,22 +86,40 @@ def section_a():
     rows = seedvc.ckpts(role)
     check("档位清单非空", len(rows) >= 1, "档位数=%d" % len(rows))
 
-    want = [r for r in rows if r["step"] == 600 and not r["final"]]
-    check("步数解析：DiT_epoch_00003_step_00600.pth → 600 步",
-          bool(want) and want[0]["file"] == "DiT_epoch_00003_step_00600.pth",
-          [r["file"] for r in rows])
+    # ★ 步数解析不许写死"应该有哪些档"（2026-10-19 修）。
+    #   这里原本断言"必须有一个 step=600 的 DiT 档 / 末档必须=1000 / DiT 最大=800"
+    #   —— 那是一份**具体角色**的训练历史（1000 步那一次）。库里现在剩下的角色
+    #   训练总步数是 600、DiT 档只有 200 和 400 ⇒ 四条一起恒红，而**产品是对的**：
+    #   末档 ft_model.pth 报 600（= 训练总步数），确实大于 DiT 档最大的 400。
+    #   ⇒ 改成不写死的不变量（换哪个角色都成立）：
+    #     ① 每个 DiT 档：文件名里 `step_(\d+)` 必须就是它的 step；
+    #     ② 末档：step 必须等于这次训练的**总步数** role.seedvc.steps，
+    #        且必须**大于** DiT 档里最大的那个 —— 这条才是"不是拿 DiT 最大值猜"的真身。
+    bad = []
+    for r in rows:
+        if r["final"]:
+            continue
+        m = re.search(r"step_(\d+)", r["file"] or "")
+        if not m or int(m.group(1)) != r["step"]:
+            bad.append((r["file"], r["step"]))
+    check("步数解析：每个 DiT 档的 step 都与文件名里的数字一致",
+          bool(rows) and not bad, bad or [r["file"] for r in rows])
 
-    # ft_model.pth 是训练结束时那个模型，它的步数 = 这次训练的 max_steps，
-    # **不能**拿 DiT 档里最大的那个猜（1000 步那次最后一个 DiT 档是 800）。
     fin = [r for r in rows if r["final"]]
     dit_steps = [r["step"] for r in rows if not r["final"]]
+    sv = role.get("seedvc") or {}
+    total = int(sv.get("steps") or 0)
     check("★ 末档（ft_model.pth）的步数取自这次训练的总步数，不是 DiT 档里的最大值",
-          bool(fin) and dit_steps and fin[0]["step"] == 1000 and max(dit_steps) == 800,
-          "末档=%s DiT档=%s" % ([r["step"] for r in fin], dit_steps))
+          bool(fin) and bool(dit_steps) and total
+          and fin[0]["step"] == total and fin[0]["step"] > max(dit_steps),
+          "末档=%s 训练总步数=%s DiT档=%s"
+          % ([r["step"] for r in fin], total, dit_steps))
 
     sel = seedvc.selected(role)
-    check("默认档 = 角色显式选的那一档（ft600）",
-          bool(sel) and sel["step"] == 600, sel and sel["label"])
+    want_step = int(sv.get("step") or 0)
+    check("默认档 = 角色显式选的那一档（ft%d）" % want_step,
+          bool(sel) and sel["step"] == want_step and sel["path"] == sv.get("ckpt"),
+          sel and sel["label"])
 
     fake = {"id": "r_deadbeef", "name": "没有微调过的角色", "seedvc": None}
     check("没微调过的角色：档位为空、默认档为 None",
@@ -623,6 +641,8 @@ def section_d(role):
           return true;})()""")
 
         rid = role["id"]
+        # ★ 同样不许写死 "ft600"：期望值必须跟着"这个角色当前选的那一档"走。
+        want_label = "ft%d" % int(((role.get("seedvc") or {}).get("step")) or 0)
         # 用 IIFE 包起来：裸 `return true;` 在 Runtime.evaluate 里是
         # "Illegal return statement"，整段 JS 一行都不会执行（页面看着没事，
         # 其实判据后面全在测一个没打开的抽屉）。
@@ -640,14 +660,14 @@ def section_d(role):
               "界面=%s 接口=%s" % (n_opts, n_api))
         check("档位下拉选中的就是当前在用的那一档",
               page.js("(()=>{const s=document.querySelector('#svCkpt');"
-                      "return s.selectedOptions[0].textContent})()").find("ft600") >= 0,
+                      "return s.selectedOptions[0].textContent})()").find(want_label) >= 0,
               page.js("(()=>{const s=document.querySelector('#svCkpt');"
                       "return s.selectedOptions[0]?s.selectedOptions[0].textContent:''})()"))
         # ★ 等状态行**真的写完**再断言，别读完上一轮就走：点页签会再触发一次
         #   refreshSeedvc，它先把状态行写成"正在看微调状态…"，此时下拉里还是
         #   上一次的选项 ⇒ 立刻读就会读到那句占位文案（间歇性红，第一次跑是绿的）。
-        ok_state = poll(page, "(document.querySelector('#svState').textContent||'').indexOf('ft600')>=0",
-                        True, 25)
+        ok_state = poll(page, "(document.querySelector('#svState').textContent||'').indexOf(%s)>=0"
+                        % json.dumps(want_label), True, 25)
         check("状态行写清了当前用哪一档（不是一句「读不到」）", ok_state,
               (page.js("document.querySelector('#svState').textContent") or "")[:110])
 
