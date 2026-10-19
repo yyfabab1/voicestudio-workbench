@@ -430,7 +430,20 @@ def main():
 
     print("\n=== 4. 端到端：mode=match 真的会把素材并进那个角色 ===")
     snap = {r["id"]: nseg(r["id"]) for r in studio.load_roles()["roles"]}
-    n_before_roles = len(snap)
+
+    # ★ 数"普通角色"时要把「待归类的片段」排除掉，理由说清楚（2026-10-19 加的段级复核）：
+    #   这条判据要防的是"**认人认错了** ⇒ 素材被并进一个不该并的角色、顺带新建了一个"。
+    #   而「待归类的片段」是段级复核**有意**的落点 —— 那些段是"谁都不像"才被剔出来的，
+    #   不是认错了，是认不出。它跟"认错"是两回事，混在一起数会误报。
+    #   ⇒ 所以判据改成"没有新建多余的**普通**角色"，并**另加更严的两条**把它盯住
+    #     （见下：它必须真的收到了段，且这些段必须真的是从本次导入里剔出来的）。
+    def pending_ids():
+        return {r["id"] for r in studio.load_roles()["roles"] if r.get("pending")}
+
+    def real_ids():
+        return role_ids() - pending_ids()
+
+    n_before_roles = len(snap) - len(pending_ids())
     same_wav = os.path.join(bt, "same_batch.wav")
     concat_wavs(same_files, same_wav)
     j2 = studio.new_job(None, "ingest", "门禁·认人端到端")
@@ -446,16 +459,44 @@ def main():
     check("★ 基准角色的段数增加了（素材真的并进去了）",
           nseg(base) > (snap.get(base) or 0),
           "%s -> %s" % (snap.get(base), nseg(base)))
-    check("★ 没有新建多余的角色", len(role_ids()) == n_before_roles,
-          "%s -> %s" % (n_before_roles, len(role_ids())))
-    others = [i for i in snap if i != base]
-    check("★ 其他角色的段数一个都没变（没被别人影响）",
+    check("★ 没有新建多余的普通角色（「待归类的片段」单独算，见下一条）",
+          len(real_ids()) == n_before_roles,
+          "%s -> %s（不含待归类）" % (n_before_roles, len(real_ids())))
+
+    # ★ 补两条更严的：待归类不是"随便建一个就行"，它必须有真东西，而且是本次剔出来的。
+    pend = [r for r in studio.load_roles()["roles"] if r.get("pending")]
+    if pend:
+        got = sum(nseg(r["id"]) for r in pend)
+        check("「待归类的片段」里真的有段（不是空壳）", got > 0, "%d 段" % got)
+        check("★ 同人的段没有被误塞进「待归类」（基准角色该拿到的都拿到了）",
+              nseg(base) - (snap.get(base) or 0) >= 10,
+              "基准新增 %d 段" % (nseg(base) - (snap.get(base) or 0)))
+    else:
+        print("     （本次没有待归类角色：说明段级复核一段都没剔 —— 同样合理）")
+    # ★ 为什么排除 pending：「待归类的片段」按设计就是"谁都不像的段"的落点，
+    #   它**本来就该**在这次导入里收到被剔出来的段。把它算进"其他角色不许变"
+    #   等于要求段级复核什么都不剔 —— 那是自相矛盾的判据（红了也是假红）。
+    #   真正盯住它的是上面那两条（必须有真段 + 同人段没被误塞进去）。
+    #   退一步只保留一条仍然承重的：pending 只许**增加**，不许变少（不许丢素材）。
+    others = [i for i in snap if i != base and i not in pending_ids()]
+    check("★ 其他（非待归类）角色的段数一个都没变（没被别人影响）",
           all(nseg(i) == snap[i] for i in others if i in role_ids()),
           [(i, snap[i], nseg(i)) for i in others
            if i in role_ids() and nseg(i) != snap[i]])
+    pend_shrunk = [(i, snap[i], nseg(i)) for i in pending_ids()
+                   if i in snap and i in role_ids() and nseg(i) < snap[i]]
+    check("★ 已有的「待归类的片段」只增不减（本次导入没吃掉它原有的段）",
+          not pend_shrunk, pend_shrunk)
 
     print("\n=== 5. 收尾：删掉本关建的角色 ===")
-    created = set(new_ids) | {thin_id}
+    # ★ 必须按"本关**实际**新建的角色"来收尾，不能只列第 1 步记下来的 new_ids：
+    #   第 4 步端到端导入会由段级复核**再**建一个「待归类的片段」，它不在 new_ids 里。
+    #   漏了它的后果实测过：roles.json 里留下 r5446d8f1，下一次跑只有靠"库里已有一个
+    #   待归类角色可复用"才侥幸不红 —— 这是确定性隐患，不是间歇。
+    created = set(new_ids) | {thin_id} | (role_ids() - before)
+    if created - (set(new_ids) | {thin_id}):
+        print("    额外回收（端到端导入新建的）：%s"
+              % sorted(created - (set(new_ids) | {thin_id})))
     for i in sorted(created):
         try:
             studio.delete_role(i)          # 先摘角色库登记（这一步一定成），再 rmtree
