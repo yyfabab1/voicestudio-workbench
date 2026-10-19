@@ -936,7 +936,16 @@ async function restoreJobs() {
   //   表现为"点了没反应"。这不是推测：所有失效的点击都在左下那一带。
   //   ⇒ 只把还在跑的接回来（那才是刷新时真正会担心"跑丢了"的东西），
   //     最多再留 2 张最近的已结束的当"刚才那次去哪了"的入口。
-  const fin = jobs.filter(x => x.state !== "running" && x.state !== "queued");
+  // ★ 已结束的那两张必须**另外**再问一次，不能从 `alive` 里筛。
+  //   后端 `alive=1` 只回 running/queued（当初就是为了不再传 800 KB 才改成按状态过滤的），
+  //   于是下面这行的 `fin` 恒为空 ⇒ 刷新页面后"刚才那次跑哪了"的入口一张都没有
+  //   （2026-10-19 实测：抽屉里 0 张已结束的卡，代码里写着要留 2 张却从来没生效过）。
+  //   补一次 `limit=12` 的小请求（十几条，几 KB）专门拿最近已结束的。
+  let fin = [];
+  try {
+    fin = ((await api("/api/jobs?limit=12")).jobs || [])
+      .filter((x) => x.state !== "running" && x.state !== "queued");
+  } catch (e) { fin = []; }
   for (const j of fin.slice(0, 2)) {
     showJobOnce(j.id);
     const el = $("#job-" + j.id);
@@ -2480,11 +2489,21 @@ function navGo(id) {
 function navSync() {
   const probe = window.scrollY + navBarH() + 24;
   let cur = NAV_ITEMS[0].id;
-  for (const it of NAV_ITEMS) {
+  const live = NAV_ITEMS.filter((it) => document.getElementById(it.id));
+  for (const it of live) {
     const el = document.getElementById(it.id);
     if (el && (el.getBoundingClientRect().top + window.scrollY) <= probe) {
       cur = it.id;
     }
+  }
+  // ★ 滚到底时最后一项永远高亮不上 —— 实测（2026-10-19）：市场区块只有 514px，
+  //   比视口 904px 还矮，页面滚到底时它的绝对位置 4314 仍然大于探测线 4059，
+  //   于是点了「市场」导航却还停在「曲库」上。区块比视口矮 ⇒ 它这辈子够不到探测线，
+  //   跟页面多长无关。所以到底了就把"当前区块"判成最后一项 —— 用户眼睛看到的
+  //   最后一个区块本来就是它。
+  const de = document.documentElement;
+  if (window.innerHeight + window.scrollY >= de.scrollHeight - 2 && live.length) {
+    cur = live[live.length - 1].id;
   }
   const box = document.getElementById("navBar");
   if (!box) return;
