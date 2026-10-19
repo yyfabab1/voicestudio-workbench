@@ -46,4 +46,8 @@ print()
 # 三条同时成立才算有效：注入后放行(判据确实在拦) + 还原后拦截 + 充足时放行
 ok = (not blk1) and blk2 and (not blk3)
 print("结论:", "判据有效" if ok else "★判据失效")
+# 汇总行（供 `_run_regression.sh snapshot` 统计判据数）：三条，见上面的注释。
+print("通过 %d 项，失败 %d 项"
+      % (int(not blk1) + int(blk2) + int(not blk3),
+         int(blk1) + int(not blk2) + int(blk3)))
 sys.exit(0 if ok else 1)

@@ -488,6 +488,66 @@ def main():
     check("★ 已有的「待归类的片段」只增不减（本次导入没吃掉它原有的段）",
           not pend_shrunk, pend_shrunk)
 
+    print("\n=== 4e. 单人素材不许崩（2026-10-19 真故障）===")
+    # 真故障：导入一段 40 秒**单人**素材，9 个切片被时间聚合全并成 1 组，
+    # 而 sklearn 的 AgglomerativeClustering 硬要求 n_samples >= 2：
+    #   ValueError: Found array with 1 sample(s) ... a minimum of 2 is required
+    #   ⇒ 阶段「分离不同声音」报 退出码 1，整个导入失败。
+    # 单人素材是最常见的输入（用户就是给了自己的一段视频），所以这条必须钉死。
+    # 这段是纯计算，不依赖素材，跑得很快。
+    import numpy as np
+    from stages import diarize as _dz
+
+    def _mk_feats(n, n_bases, dim=1024, seed=11, jitter=0.01):
+        """造 n 段特征：按 n_bases 个基向量**轮流**取（时间上交替），每段加一点噪声。
+
+        轮流是为了让相邻两段的相似度低于 GROUP_SIM —— 也就是模拟"两个人在对话"；
+        n_bases=1 时所有段都是同一个人，相邻高度相似 ⇒ 时间聚合会把它们并成 1 组，
+        正好复现那个崩溃条件。
+        """
+        rng = np.random.RandomState(seed)
+        bases = []
+        for _ in range(n_bases):
+            v = rng.randn(dim)
+            bases.append(v / np.linalg.norm(v))
+        out = []
+        for i in range(n):
+            v = bases[i % n_bases] + rng.randn(dim) * jitter
+            out.append({"emb": v.tolist(), "dur": 5.0, "voiced": 0.9,
+                        "file": "s_%010d_%010d.wav" % (i * 16000, (i + 1) * 16000)})
+        return out
+
+    try:
+        r1 = _dz.cluster(_mk_feats(8, 1))
+        check("★ 单人素材（8 段同一个人）不许崩", True, "k=%s" % r1["k"])
+        check("★ 单人素材被判成 1 个人（没被硬拆成两个）", r1["k"] == 1, "k=%s" % r1["k"])
+        check("单人素材每段都归到角色 0（没有悬空 -1）",
+              all(int(x) == 0 for x in r1["labels"]), sorted(set(r1["labels"])))
+    except Exception as e:
+        check("★ 单人素材（8 段同一个人）不许崩", False,
+              "%s: %s" % (type(e).__name__, str(e)[:160]))
+
+    # 负对照：证明上面那条护栏绕开的是真坑 —— 拿 1 个样本直接聚类必须抛。
+    threw = None
+    try:
+        from sklearn.cluster import AgglomerativeClustering
+        AgglomerativeClustering(n_clusters=1, metric="cosine",
+                                linkage="average").fit_predict(
+            np.asarray([[1.0] + [0.0] * 7]))
+    except Exception as e:
+        threw = e
+    check("★ 负对照：1 个样本直接聚类确实会抛（说明护栏不是摆设）",
+          threw is not None, str(type(threw).__name__ if threw else "没抛！"))
+
+    # 反向对照：护栏不能把所有人都当一个人（否则"不崩"就没意义了）
+    try:
+        r2 = _dz.cluster(_mk_feats(8, 2))
+        check("★ 反向对照：两个不同的人（4+4 交替）仍然分成 2 个", r2["k"] == 2,
+              "k=%s" % r2["k"])
+    except Exception as e:
+        check("★ 反向对照：两个不同的人（4+4 交替）仍然分成 2 个", False,
+              "%s: %s" % (type(e).__name__, str(e)[:160]))
+
     print("\n=== 5. 收尾：删掉本关建的角色 ===")
     # ★ 必须按"本关**实际**新建的角色"来收尾，不能只列第 1 步记下来的 new_ids：
     #   第 4 步端到端导入会由段级复核**再**建一个「待归类的片段」，它不在 new_ids 里。

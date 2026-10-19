@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import threading
+import time
 import traceback
 import urllib.parse
 
@@ -30,6 +31,8 @@ STAGES = os.path.join(HERE, "stages")
 sys.path.insert(0, HERE)
 sys.path.insert(0, STAGES)
 
+from api_contract import API_MIN, API_VERSION, SERVICE  # noqa: E402
+
 import studio  # noqa: E402
 import music_src  # noqa: E402
 import local_lib  # noqa: E402
@@ -38,6 +41,7 @@ import modelhub  # noqa: E402  声音市场：搜/下别人训练好的模型
 
 PORT = int(os.environ.get("VOICESTUDIO_PORT", "8756"))
 HOST = "127.0.0.1"
+STARTED_TS = time.time()
 
 MIME = {
     ".html": "text/html; charset=utf-8",
@@ -191,6 +195,24 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         path = urllib.parse.unquote(u.path)
         q = urllib.parse.parse_qs(u.query)
+
+        # ★ 健康检查 / 接口契约（不碰任何数据，最先应答）
+        #   为什么必须有：门禁跑在**正在运行的进程**上，而"这个进程是什么时候
+        #   起的、带的是哪一版接口"以前只能靠猜。2026-10-19 就因此假红过一次：
+        #   train_rounds_ui 跑在昨天的旧服务上，新接口 404，看着像产品坏了。
+        #   现在门禁开跑前先问这一句，版本不够就拒绝跑并提示重启。
+        if path == "/api/health":
+            return json_response(self, {
+                "ok": True,
+                "service": SERVICE,
+                "api_version": API_VERSION,
+                "api_min": API_MIN,
+                "pid": os.getpid(),
+                "started_at": time.strftime("%Y-%m-%d %H:%M:%S",
+                                            time.localtime(STARTED_TS)),
+                "uptime": int(time.time() - STARTED_TS),
+                "port": PORT,
+            })
 
         if path == "/" or path == "/index.html":
             return self.serve_file(os.path.join(WEB, "index.html"))
@@ -461,6 +483,16 @@ class Handler(BaseHTTPRequestHandler):
             # 扫描结果可能很大，只回前 2000 条，界面够用
             res["items"] = res["items"][:2000]
             return json_response(self, res)
+
+        if path == "/api/gate-snapshot":
+            # 最近一次**全量**回归的结果。只读现成的 JSON，绝不在请求里跑门禁
+            # （一轮全量要跑很久，一个页面刷新不该触发它）。
+            p = os.path.join(studio.DATA, "gate_snapshot.json")
+            try:
+                with open(p, encoding="utf-8") as f:
+                    return json_response(self, {"ok": True, "snap": json.load(f)})
+            except Exception:
+                return json_response(self, {"ok": False, "snap": None})
 
         if path == "/api/env":
             return json_response(self, {
@@ -758,6 +790,30 @@ class Handler(BaseHTTPRequestHandler):
             studio.write_list(rid)
             studio.refresh_stats(rid)
             return json_response(self, {"ok": True})
+
+        if action == "output-use":
+            # 把某一条历史 take **设为当前成品**。
+            # 为什么需要它：同一首歌往往会出好几版（pitch=0 一版、+2 一版、
+            # 换引擎再来一版），过两天想退回第一版时，只能靠文件名猜是哪一版。
+            # 「当前成品」的约定就是 outputs 列表的最后一条（界面也是这么取的），
+            # 所以"设为当前" = 把它挪到末尾 —— 不动文件、不重跑推理。
+            try:
+                idx = int(body.get("index"))
+            except Exception:
+                return json_response(self, {"error": "缺少成品序号"}, 400)
+
+            def _promote(r):
+                outs = list(r.get("outputs") or [])
+                if not (0 <= idx < len(outs)):
+                    raise IndexError("没有这一条成品（序号 %d）" % idx)
+                outs.append(outs.pop(idx))
+                r["outputs"] = outs
+
+            try:
+                studio.mutate_role(rid, _promote)
+            except IndexError as e:
+                return json_response(self, {"error": str(e)}, 400)
+            return json_response(self, {"ok": True, "role": studio.get_role(rid)})
 
         if action == "seedvc-pick":
             # 换用微调出来的某一档。档位是**按步数**选的（ft200/400/600…），

@@ -102,7 +102,8 @@
   <div class="grid" id="grid"></div>
   <div class="empty" id="emptyBox" style="display:none">
     <b>还没有任何角色</b>
-    把一个视频丢进来，里面的每个声音会被自动分成独立角色
+    把一个视频丢进来 —— <b>拖到页面任何地方都行</b>，不用瞄准那个小框 ——
+    里面的每个声音会被自动分成独立角色
   </div>
 
   <!-- 本地音乐导入：用户自己的歌，优先级最高 -->
@@ -581,6 +582,9 @@
         <div class="hint" style="margin-bottom:10px">
           需要这个角色有 10 段以上、合计 1 分钟以上的干净干声（唱歌或说话都行）。
           训练比说话模型慢得多，通常要几十分钟。<br>
+          <b>当前为稳定档（FP32）；加速档在验证中</b> —— 半精度/梯度累积能明显
+          加快训练，但还没有整曲 A/B 数据，在验证完成前不设成默认（那等于拿
+          全局质量换速度）。<br>
           <b>RVC 可以接着训</b>：轮数是「训到第几轮」，不是「再训几轮」——
           已经训到 300 之后再填 600，会从 300 接着往下练；同样填 300 就没有额外可训的轮数。
         </div>
@@ -678,6 +682,9 @@
   <div class="jall" id="jall" onclick="jobsCollapseAll()">收起全部展开的</div>
 </div>
 <div class="toast" id="toast"></div>
+<!-- 门禁快照：最近一次全量回归的结果。放在页面最底部，不抢主流程的位置，
+     但它回答了一个正当的问题：这些功能到底被验证过没有。 -->
+<div class="gatesnap" id="gateSnap" style="display:none"></div>
 <!-- multiple：一次可以选好几个视频（同一个人的几期节目 → 合成一个模型） -->
 <input type="file" id="filePicker" style="display:none" multiple>
 <script src="/static/app.js"></script>
@@ -690,6 +697,6 @@
      于是"刷新一下任务就没了"这个老毛病其实一直没修好 —— 这一轮连
      「取消」按钮都跟着一起消失了（没有任务卡 ⇒ 没有按钮）。
      它在 app.js 里是 async，这里不用 await：让它在后台把任务接回来即可。 -->
-<script>loadLibrary(); locInit(); mktInit(); restoreJobs(); navInit(); vizInit();</script>
+<script>loadLibrary(); locInit(); mktInit(); restoreJobs(); navInit(); vizInit(); loadGateSnapshot();</script>
 </body>
 </html>

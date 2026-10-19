@@ -806,6 +806,13 @@ def main():
 
     print("ALLDONE")
     print("可疑项：%d" % len(seen))
+    # 汇总行（供 `_run_regression.sh snapshot` 统计判据数）。
+    #   这一关原来只打印"可疑项：N"，没有"通过 N 项，失败 M 项"那一行 ——
+    #   结果门禁快照里它永远是 0 条判据，看着像这一关什么都没验。
+    #   口径：6 条内置自测 + 1 条名单自检 + 1 条"没有可疑标识符"。
+    print("通过 %d 项，失败 %d 项"
+          % ((6 if ok_self else 0) + (1 if ok_list else 0) + (1 if not seen else 0),
+             (0 if ok_self else 6) + (0 if ok_list else 1) + (len(seen) if seen else 0)))
     bad = len(seen) > 0 or not ok_self or not ok_list
     sys.exit(1 if bad else 0)
 

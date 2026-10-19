@@ -212,10 +212,24 @@ def cluster(feats, n_speakers=None, min_dur=MIN_DUR, min_voiced=MIN_VOICED, use_
         trace = [("人工指定", True, "界面上指定了 %d 个角色" % k)]
     else:
         k, trace = choose_k(GE, weights=weights)
-    glab = AgglomerativeClustering(n_clusters=k, metric="cosine", linkage="average").fit_predict(GE)
-    k = int(len(set(glab)))
-    trace.append(("时间聚合", True, "%d 个片段并成 %d 组后再聚类（组内最小 %d 段 / 最大 %d 段）"
-                  % (len(idx), len(groups), min(weights), max(weights))))
+
+    if GE.shape[0] < 2:
+        # ★ 时间聚合把全部可信片段并成了**一组** —— 也就是「这素材里只有一个人」。
+        #   这是单人视频最常见的样子，可 sklearn 的 AgglomerativeClustering 硬要求
+        #   n_samples >= 2，这里传 1 行会
+        #   ValueError: Found array with 1 sample(s) ... while a minimum of 2 is required
+        #   ⇒ 整个导入当场失败（症状：阶段「分离不同声音」报 退出码 1）。
+        #   只有一个人时根本不需要聚类，直接全归 0 号。
+        glab = np.zeros(GE.shape[0], dtype=int)
+        k = 1
+        trace.append(("时间聚合", True,
+                      "%d 个片段并成 1 组（全是一个人），跳过聚类" % len(idx)))
+    else:
+        glab = AgglomerativeClustering(n_clusters=k, metric="cosine",
+                                       linkage="average").fit_predict(GE)
+        k = int(len(set(glab)))
+        trace.append(("时间聚合", True, "%d 个片段并成 %d 组后再聚类（组内最小 %d 段 / 最大 %d 段）"
+                      % (len(idx), len(groups), min(weights), max(weights))))
 
     for gi, c in enumerate(glab):
         for j in groups[gi]:

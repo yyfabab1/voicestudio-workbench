@@ -283,8 +283,14 @@ audio{height:34px;max-width:260px}
   width:min(430px,calc(100% - 36px));
   /* ★ 上限从 calc(100vh-36px) 收到 58vh：以前任务一多，面板能从底部
      一路长到屏幕顶，把角色卡 / 训练页签 / 曲库按钮全压在下面。
-     58vh 保证"任务看得见"和"下面内容还能用"两边都留得住（超出的自己滚）。 */
-  max-height:58vh;overflow-y:auto;overflow-x:hidden;
+     58vh 保证"任务看得见"和"下面内容还能用"两边都留得住（超出的自己滚）。
+     ★ 2026-10-19 再收到 46vh：58vh 仍会超过「半个视口」这条口径
+     （verify_ncm_sep 的 D8 判据：展开态面板 ≤50% 视口高）。
+     触发它的实际场景是"面板里有好几张卡"（正在跑的 + 补回来的已结束的）：
+     内容高度一旦超过上限，面板就停在上限值上 —— 58vh 恰好比判据线高 8 个点，
+     于是"卡片多一张"就会红。收到 46vh 后，卡片再多也不会越过半屏，
+     两边口径一致（这条判据要守的是"别挡住画面"，不是某一张卡有多高）。 */
+  max-height:46vh;overflow-y:auto;overflow-x:hidden;
   padding-right:2px;
 }
 .jobbox{
@@ -330,6 +336,13 @@ audio{height:34px;max-width:260px}
   color:var(--txt3);font-size:11.5px;min-width:0;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
+/* 正在做的那一步的「人话 + 还要多久」：这是用户在长任务里唯一会反复看的一行，
+   所以给它比步骤说明更亮的颜色，且不许被 ellipsis 吃掉（写全，宁可换行）。 */
+.jobbox .step .sh{
+  color:var(--txt);font-size:12px;min-width:0;flex:1;
+  white-space:normal;overflow:visible;text-overflow:clip;
+}
+.jobbox .step .sh .seta{color:#9db1ff;font-weight:550;margin-left:2px}
 /* 还没开始：最淡，别跟"正在做"抢注意力 */
 .jobbox .step.wait{color:var(--txt3);opacity:.55}
 .jobbox .step.wait .mk{color:var(--txt3)}
@@ -484,7 +497,67 @@ pre.log{
 .qcb.ok{border-color:rgba(80,200,140,.35)}
 .qcb.bad{border-color:rgba(255,107,107,.5);color:var(--txt2);background:rgba(255,107,107,.08)}
 .qcb b{color:var(--bad)}
+/* 成品旁的质检摘要：三项分栏（音准 / 八度错 / 错位）+ 一句"能不能用"。
+   每一项自己带 ✓/⚠ —— 用户扫一眼就知道是哪一项不达标，不用去读百分比的含义。 */
+.qcs{
+  margin-top:7px;font-size:11.5px;padding:5px 9px;border-radius:8px;
+  background:rgba(108,140,255,.08);border:1px solid transparent;
+  display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;
+}
+.qcs.ok{border-color:rgba(80,200,140,.35)}
+.qcs.bad{border-color:rgba(255,107,107,.5);background:rgba(255,107,107,.08)}
+.qcs .qct{color:var(--txt3);font-size:11px}
+.qcs .qci{color:var(--txt2)}
+.qcs .qci.ok{color:var(--txt)}
+.qcs .qci.no{color:var(--bad);font-weight:550}
+.qcs .qcv{color:var(--txt3);font-size:11px;margin-left:auto}
+/* 历史 take：折叠在成品下面，默认收起 —— 它不该抢当前成品的位置，
+   但"能退回上一版"这件事必须让用户看得见（不然等于没有）。 */
+.takes{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
+.takes > summary{cursor:pointer;font-size:12.5px;color:var(--txt2);padding:4px 0}
+.takes > summary:hover{color:var(--txt)}
+.takelist{display:flex;flex-direction:column;gap:8px;margin-top:8px;
+  max-height:340px;overflow:auto}
+.take{border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:var(--bg2)}
+.take .tt{font-size:12px;color:var(--txt3)}
+.take .pp{font-size:12px;color:var(--txt2);margin-top:3px}
+.take .row{margin-top:7px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+/* 一句话结论。它比指标行重要 —— 指标是证据，结论是答案。
+   左边一道细竖线：读的时候眼睛能跳过 12 行数字直接扫结论。 */
+.vd{
+  margin-top:6px;font-size:12.5px;color:var(--txt2);line-height:1.5;
+  border-left:2px solid var(--acc);padding-left:8px;
+}
+.outcard .vd{color:var(--txt);font-size:13px}
+.gatesnap .gsdiff{display:block;margin-top:4px;font-size:11px;color:var(--txt3)}
+.gatesnap .gsdiff.warn{color:var(--bad);font-weight:550}
+/* 页面底部的门禁快照。安静地待在最底下 —— 它不是主流程的一部分，
+   但"这套东西被验证过没有"这个问题的答案应该在界面上找得到。 */
+.gatesnap{margin:26px 0 10px;padding:0 4px;text-align:center}
+.gatesnap .gsd{
+  display:inline-block;font-size:11.5px;color:var(--txt3);line-height:1.7;
+  border:1px solid var(--line);border-radius:999px;padding:4px 14px;
+}
+.gatesnap .gsd.ok{border-color:rgba(80,200,140,.35)}
+.gatesnap .gsd.bad{border-color:rgba(255,107,107,.45)}
+.gatesnap .gsm{font-weight:550;color:var(--txt2);margin-right:8px}
+.gatesnap .no{color:var(--bad)}
 .card.dragging{opacity:.5;transform:scale(.97)}
+/* 拖拽经过槽位时的落点提示：把"会发生什么"写出来，用户才敢松手 */
+.slot{position:relative}
+.slot .drophint{
+  position:absolute;left:50%;bottom:-3px;transform:translate(-50%,100%);
+  z-index:6;white-space:nowrap;font-size:11.5px;padding:3px 10px;border-radius:999px;
+  background:var(--acc);color:#fff;pointer-events:none;
+  box-shadow:0 2px 8px rgba(0,0,0,.28);
+}
+.slot .drophint.bad{background:var(--bad)}
+/* 角色卡上的拖拽把手：让用户**看得见**这张卡能拖 */
+.card .dragdot{
+  position:absolute;top:6px;right:8px;font-size:12px;color:var(--txt3);
+  cursor:grab;letter-spacing:-1px;
+}
+.card:hover .dragdot{color:var(--acc)}
 .hint.tip{color:var(--acc2);font-size:12px}
 .poplist .opt{padding:7px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--txt)}
 .poplist .opt:hover{background:rgba(108,140,255,.14)}
@@ -735,6 +808,11 @@ body.dropping::after{
    下载按钮全压在底下（真鼠标按坐标点，打到的全是任务卡里的元素）。
    展开后这些照样都在 —— "看得见每一步"没打折，只是不再白占地方。 */
 .jobbox .steps,
+/* 任务条上的资源占用标签：回答"为什么我的任务要等" */
+.jobbox .jres{
+  font-size:10.5px;color:var(--txt3);border:1px solid var(--line);
+  border-radius:999px;padding:1px 7px;white-space:nowrap;flex:none;
+}
 .jobbox .jmeta{display:none}
 .jobbox.open .steps,
 .jobbox.open .jmeta{display:block}

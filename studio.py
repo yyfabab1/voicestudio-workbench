@@ -1183,8 +1183,15 @@ def new_job(role_id, kind, title, epochs_total=None):
     return job
 
 
-def begin_step(job, name, note=""):
-    """开始一步。同一批流程里重名的步骤会合并成一条（更新说明），不重复堆。"""
+def begin_step(job, name, note="", hint="", eta=None):
+    """开始一步。同一批流程里重名的步骤会合并成一条（更新说明），不重复堆。
+
+    hint / eta ——「黑盒等待」的解药。
+      以前界面上只有一句干巴巴的步骤名（"语音识别"），配上一条不动的进度条，
+      用户不知道这一步在干什么、还要多久，于是反复点、或者以为卡死了。
+      hint  = 这一步正在做的事的人话版（"正在识别原词，第 2/5 段"）
+      eta   = 这一步预计还要多少秒（循环里用 step_hint 边跑边更新）
+    """
     # ★ 步骤边界也要拦取消：run() 只能拦住"正在起子进程"的那一段，
     #   而两步之间还有纯 Python 的活（拷文件、写清单、挑参考音频），
     #   那段要是跑起来，取消就只是"晚一点继续跑"而已。
@@ -1195,10 +1202,30 @@ def begin_step(job, name, note=""):
         job["_step_idx"] = job.get("_step_idx", -1) + 1
         steps.append({"n": job["_step_idx"] + 1, "name": name,
                       "state": "doing", "note": note,
-                      "at": _now(), "secs": None})
+                      "hint": hint or "", "eta": eta, "at": _now(), "secs": None})
     save_job(job)
     log(job, "【第 %d 步】%s%s" % (job["_step_idx"] + 1, name,
                                   ("　" + note) if note else ""))
+
+
+def step_hint(job, text, eta=None):
+    """给**正在做的那一步**换一句人话 / 更新预计剩余。
+
+    循环里每轮调一次，界面上就会出现「正在识别原词，第 3/12 段 · 约需 1 分 20 秒」。
+    它是纯展示层：写不进去也不许影响流程（所以全程 try）。
+    """
+    try:
+        with JOBS_LOCK:
+            steps = job.setdefault("steps", [])
+            i = job.get("_step_idx", -1)
+            if 0 <= i < len(steps):
+                if text:
+                    steps[i]["hint"] = text
+                if eta is not None:
+                    steps[i]["eta"] = int(max(0, eta))
+        save_job(job)
+    except Exception:
+        pass
 
 
 def end_step(job, ok=True, note=""):
@@ -1511,11 +1538,13 @@ def step_uvr(job, audio_wav, work, enabled=True, model=None):
         if rows:
             chosen = rows[0]["model"]
             log(job, "  ⇒ 用 %s（得分 %.1f）" % (chosen[:28], rows[0]["score"]))
+    step_hint(job, "已选定 %s，正在分离整条音轨（这一步最久）" % chosen[:28])
     v, i, why = _uvr_run(job, chosen, in_dir, vocal_dir, inst_dir)
     if not v:
         for m in _sep_candidates():
             if m == chosen:
                 continue
+            step_hint(job, "首选模型没跑通，正在换 %s 重试" % m[:28])
             v, i, why = _uvr_run(job, m, in_dir, vocal_dir, inst_dir)
             if v:
                 chosen = m
@@ -1636,7 +1665,12 @@ def _sep_probe(job, src_wav, work, cands):
     shutil.copyfile(probe, os.path.join(pin, "source.wav"))
 
     rows = []
-    for m in cands[:SEP_MAX_CAND]:
+    _cands = cands[:SEP_MAX_CAND]
+    for _k, m in enumerate(_cands):
+        # ★ 让用户看见"我在做选择"，不是干等：这一步本来就是拿 30 秒片段
+        #   让几个模型各分一遍、按得分挑最优，界面上就该这么写。
+        step_hint(job, "正在比较 %d 个分离模型，按 SDR 挑最优（第 %d/%d 个）"
+                  % (len(_cands), _k + 1, len(_cands)))
         t0 = time.time()
         v, i, why = _uvr_run(job, m, pin,
                              os.path.join(work, "pv_" + m[:20]),
@@ -2404,6 +2438,10 @@ def refine_segments(job, groups, feats, assign):
 
     owner, rejected = {}, set()
     kept = moved = dropped = skipped = 0
+    # 逐段比对这一段可能要跑几百段，界面上得能看见"走到第几段了"：
+    # 每 25 段更新一次 hint（太频繁会一直在写任务文件，没必要）。
+    _tot = sum(len(g or []) for g in groups.values())
+    _done = 0
     for lab in sorted(groups, key=lambda x: str(x)):
         try:
             if int(lab) < 0:      # 没挂上的杂音堆：本来就要进待归类，不复核
@@ -2412,6 +2450,10 @@ def refine_segments(job, groups, feats, assign):
             pass
         target = assign.get(lab)
         for f in groups[lab]:
+            _done += 1
+            if _tot and _done % 25 == 0:
+                step_hint(job, "正在逐段确认归属，把不属于这个声音的挑出去"
+                               "（第 %d/%d 段）" % (_done, _tot))
             name = f.get("file")
             if not name:
                 continue
@@ -2507,9 +2549,22 @@ def purge_outliers(job, segs, feats):
 def step_asr(job, slice_dir, out_dir, lang="zh"):
     job["stage"] = "语音识别"
     os.makedirs(out_dir, exist_ok=True)
+    # ASR 是"整批丢进去、跑完才出结果"，子进程中途一句进度都不说。
+    # 这里按段数先估一个用时，让进度条动起来、hint 里写清"共几段"，
+    # 并在 detail 里如实标"估算" —— 不编"第 3/12 段"这种拿不出来的数。
+    try:
+        n = len([f for f in os.listdir(slice_dir)
+                 if f.lower().endswith((".wav", ".flac", ".mp3"))])
+    except Exception:
+        n = 0
+    hb = None
+    if n:
+        est = int(min(3600, max(30, n * 2.5)))
+        hb = (est, "识别原词 · 共 %d 段（估算）" % n)
+        step_hint(job, "正在识别每句说的是什么字，共 %d 段" % n, eta=est)
     rc, out = run(job, '"%s" -s "%s" "%s" "%s" "%s" %s'
                   % (PY, os.path.join(STAGES, "asr_cli.py"), GSV_ROOT, slice_dir, out_dir, lang),
-                  timeout=3600)
+                  timeout=3600, heartbeat=hb)
     list_path = os.path.join(out_dir, "%s.list" % os.path.basename(slice_dir))
     if not os.path.exists(list_path):
         raise Fail("语音识别没产出标注文件。")
@@ -2588,6 +2643,7 @@ def step_train(job, exp_name, epochs, batch, version="v5turbo",
     # batch 先按大的试，显存不够再往下退 —— 8GB 卡上 batch 8 通常比 4 快一截
     for b in ([batch] if batch else [8, 4, 2]):
         log(job, "  尝试 batch=%d" % b)
+        _t_start = time.time()
 
         def _track(line, _b=b):
             """从 lightning 的进度行里读出"第几轮 / 共几轮"。
@@ -2614,6 +2670,21 @@ def step_train(job, exp_name, epochs, batch, version="v5turbo",
                              int(pct_from + span * done / max(total, 1)))
             job["detail"] = "第 %d / %d 轮" % (done, total)
             job["stage"] = "训练音色 · 第 %d/%d 轮" % (done, total)
+            # ★「已训到 N 轮 / 目标 M 轮 · 还要多久」—— 训练是几十分钟到几小时的活，
+            #   只给一条百分比的话用户既不知道跑到第几轮，也不知道还要等多久。
+            #   这里用"已跑时间 ÷ 已跑轮数"外推剩余（轮耗时在训练中基本恒定）。
+            try:
+                _el = time.time() - _t_start
+                _left = int(_el / max(done, 1) * max(total - done, 0))
+                job["eta"] = _left
+                with JOBS_LOCK:
+                    _st = job.get("steps") or []
+                    _i = job.get("_step_idx", -1)
+                    if 0 <= _i < len(_st):
+                        _st[_i]["hint"] = "已训到 %d / %d 轮" % (done, total)
+                        _st[_i]["eta"] = _left
+            except Exception:
+                pass
             save_job(job)
 
         rc, out = run(job, '"%s" -s "%s" "%s" %s %s %d %d 2 5'
@@ -2915,15 +2986,19 @@ def job_ingest(job, video=None, n_speakers=None, uvr=True, lang="zh", epochs=Non
         tag = " · 第 %d/%d 个《%s》" % (i + 1, len(vids),
                                         os.path.basename(v)) if many else ""
         sources.append(os.path.basename(v))
-        begin_step(job, "抽取音轨" + tag, "从视频里取出声音")
+        begin_step(job, "抽取音轨" + tag, "从视频里取出声音",
+                   hint="正在把画面丢掉、只留下声音")
         audio = step_audio(job, v, os.path.join(work, "v%d_audio.wav" % i))
         end_step(job, True, "已取出音频")
 
-        begin_step(job, "分离人声与伴奏" + tag, "去掉背景音乐和杂音")
+        begin_step(job, "分离人声与伴奏" + tag, "去掉背景音乐和杂音",
+                   hint="正在挑分离模型（先试听 30 秒再决定用哪个）" if uvr
+                        else "这一步跳过了（你选了不分离）")
         vocal = step_uvr(job, audio, work, enabled=uvr)
         end_step(job, True, "人声已分离")
 
-        begin_step(job, "切分片段" + tag, "把连续人声切成一句一句")
+        begin_step(job, "切分片段" + tag, "把连续人声切成一句一句",
+                   hint="正在按停顿把人声切段，太短太吵的会丢掉")
         slice_dir, good = step_slice(job, vocal, os.path.join(work, "v%d_slices" % i))
         end_step(job, True, "切出 %d 段，合格 %d 段"
                  % (len(os.listdir(slice_dir)), len(good)))
@@ -2947,7 +3022,8 @@ def job_ingest(job, video=None, n_speakers=None, uvr=True, lang="zh", epochs=Non
     slice_dir = all_slices
 
     job["stage"] = "汇总多段素材"
-    begin_step(job, "提取声纹特征", "给每段算出「这是谁的声音」")
+    begin_step(job, "提取声纹特征", "给每段算出「这是谁的声音」",
+               hint="正在给每段算声纹（这段声音的「指纹」）")
     feats = step_feat(job, slice_dir, os.path.join(work, "feat.json"))
     end_step(job, True, "算出 %d 段特征" % len(feats))
 
@@ -2968,7 +3044,8 @@ def job_ingest(job, video=None, n_speakers=None, uvr=True, lang="zh", epochs=Non
     else:
         begin_step(job, "分离不同说话人",
                    ("你指定了 %d 个人" % n_speakers) if n_speakers
-                   else "自动判断有几个人在说话")
+                   else "自动判断有几个人在说话",
+                   hint="正在把声纹相近的段聚成同一个人")
         groups, res = step_split_speakers(job, feats, n_speakers)
         end_step(job, True, "分成 %d 组：%s"
                  % (res["k"], {k: len(v) for k, v in sorted(groups.items())}))
@@ -2978,7 +3055,8 @@ def job_ingest(job, video=None, n_speakers=None, uvr=True, lang="zh", epochs=Non
     # auto 是"这次导入里怎么分人"，match 是"这些人在我库里是谁"，两个问题不能混。
     assign = {}
     if mode == "match" and not append_to:
-        begin_step(job, "认人", "看看这几堆素材分别是谁的声音")
+        begin_step(job, "认人", "看看这几堆素材分别是谁的声音",
+                   hint="正在跟库里已有角色的声纹逐个比对")
         made_n, skip_n = ensure_role_voices(job)
         if made_n or skip_n:
             log(job, "  声纹中心：补算 %d 个，跳过 %d 个（切片不在或段太少）"
@@ -3060,11 +3138,13 @@ def job_ingest(job, video=None, n_speakers=None, uvr=True, lang="zh", epochs=Non
             log(job, "  簇内离群：%d 段不像这一堆的主流声音 ⇒ 放进「待归类的片段」（没丢）"
                 % len(dropped2))
 
-    begin_step(job, "语音识别", "听出每句说了什么字")
+    begin_step(job, "语音识别", "听出每句说了什么字",
+               hint="正在识别每句说的是什么字（训练文本用，不影响音色）")
     texts = step_asr(job, slice_dir, os.path.join(work, "04_asr"), lang)
     end_step(job, True, "识别了 %d 句" % len(texts))
 
-    begin_step(job, "建立角色", "按说话人分别建档")
+    begin_step(job, "建立角色", "按说话人分别建档",
+               hint="正在把每堆素材写成一个角色（把片段拷进它的目录）")
     # singing.py 只用标准库（statistics），不需要 numpy，
     # 所以可以安全地在本进程 import —— 与 diarize 不同，别一律改子进程。
     if STAGES not in sys.path:
@@ -3166,7 +3246,8 @@ def job_ingest(job, video=None, n_speakers=None, uvr=True, lang="zh", epochs=Non
             if get_role(rid).get("pending"):
                 continue
             nm = get_role(rid)["name"]
-            begin_step(job, "训练音色：%s" % nm, "第 %d/%d 个角色" % (i + 1, max(total, 1)))
+            begin_step(job, "训练音色：%s" % nm, "第 %d/%d 个角色" % (i + 1, max(total, 1)),
+                       hint="正在训练音色模型（显卡会被占满）")
             # 每个角色在 60%→97% 里切自己的一段。写死单点进度的话，
             # 第二个角色开始训练时进度条会从上一个角色的高位跳回去 —— 用户看着像倒退。
             lo = 60 + int(37 * i / max(total, 1))
@@ -5864,6 +5945,7 @@ def sing_role(job, rid, song_path, pitch=0, index_rate=None, model=None, mix=Tru
                "这一步没有细粒度百分比，看下面的「已用」和日志；%s"
                % (("，%.0f 秒" % voice_secs) if voice_secs else "", pitch,
                   "本机 3 分 45 秒的歌实测要十几分钟，显卡被占满是正常的"))
+    step_hint(job, "正在用这个角色的音色重唱 —— 显卡会被占满，长歌十几分钟")
     # on_line：RVC 会打「当前设备/选择模型/选择索引」这类行 —— 有百分比就顺手用，
     # 没有也不影响（进度条不动，但日志在动、步骤名在，用户就知道没卡死）。
     # heartbeat：只按**人声轨**的长度估（间奏的静音段 RVC 很快就过），
@@ -5922,6 +6004,7 @@ def sing_role(job, rid, song_path, pitch=0, index_rate=None, model=None, mix=Tru
                    "实测男声角色会把 662Hz 的口哨降成 220Hz 的持续音 —— 那就是「吼」。"
                    "这一步把它们判出来，在那几段换回原始人声（口哨不体现角色音色，"
                    "翻唱里保留原版是常规做法）。")
+        step_hint(job, "正在把口哨、纯音这类不是唱的段换回原声")
         g_out = os.path.join(final, "voiceg_%s.wav" % tag)
         voice_wav, guard_info = guard_nonvocal(job, vocal_wav, out_wav, g_out, nonvocal)
         if guard_info and guard_info.get("protected_secs"):
@@ -5946,6 +6029,7 @@ def sing_role(job, rid, song_path, pitch=0, index_rate=None, model=None, mix=Tru
         begin_step(job, "混合成品",
                    "伴奏轨 + 角色人声，自动对齐响度、把残留底噪压掉，"
                    "出可直接听/发的成品")
+        step_hint(job, "正在把人声和伴奏合到一起，并对齐响度")
         rc2, out2 = run(job, '"%s" -s "%s" "%s" "%s" "%s" auto auto %s'
                         % (PY, os.path.join(STAGES, "mix_cli.py"),
                            inst_wav, voice_wav, mix_wav,
@@ -5973,6 +6057,7 @@ def sing_role(job, rid, song_path, pitch=0, index_rate=None, model=None, mix=Tru
                    "用 RMVPE 逐帧比「原唱人声」和「角色人声」的基频："
                    "音准吻合率、旋律轮廓、音高起伏比、人声与伴奏是否对齐。"
                    "只量不修 —— 至少让「难听」有个具体的说法。")
+        step_hint(job, "正在逐帧比对原唱与角色的音高，判断唱准了没")
         # ★ 质检**只取一段**（30 秒），不整首比。
         #   整首比会出错：一首歌的旋律本来就大量重复，在一两百秒里搜"最像的位置"
         #   很容易锁到另一段副歌上 —— 实测整首比给出"对齐差 1200ms"，
@@ -6007,6 +6092,7 @@ def sing_role(job, rid, song_path, pitch=0, index_rate=None, model=None, mix=Tru
                    "把整首歌从第 0 秒铺到结尾，每 %.0f 秒量一窗，再聚合成一个能代表"
                    "「整首」的数，并单独报出**最差那一窗** —— 听感由最差的那段决定。"
                    "只量一段的话，同一份成品可能报 3%% 也可能报 20%%。" % QC_WHOLE_WIN)
+        step_hint(job, "正在把整首歌从头到尾量一遍（不只抽一段）")
         qc_whole = qc_singing_whole(job, vocal_wav, voice_wav,
                                     skip=(guard_info or {}).get("segments"))
         w_warn, w_line = describe_qc_whole(qc_whole)

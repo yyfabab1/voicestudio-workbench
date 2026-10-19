@@ -131,18 +131,27 @@ def plant_probe_exp(n):
               % (r.stderr or b"").decode("utf-8", "ignore")[-160:])
         return None
     PROBE_MADE.extend([ed, wp])   # 用 extend 不重新绑定：函数里 `+=` 会把它当局部变量
-    print("  （本机 %s 这个实验读不到轮数，已种下探针实验 %s = %d 轮来验证读法本身）"
-          % (EXP, PROBE_EXP, n))
+    print("  （本机没有能用上的 RVC 实验，已种下探针实验 %s = %d 轮来验证读法本身）"
+          % (PROBE_EXP, n))
     return PROBE_EXP
 
 
-EXP = "r8c323d43"
+# ★ 不写死任何角色 id。以前这里写的是 `EXP = "r8c323d43"`（阿塔尼斯，后来被删了）：
+#   角色没了之后，这一关就悄悄从「验真角色的 ckpt」降级成「验自己种的探针」——
+#   靠降级还能绿，但那个 id 成了死分支，读代码的人会以为它依赖那个角色。
+#   现在的规则：库里有哪个角色真训过 RVC 就用它；一个都挑不到才种探针。
+EXP = None
+for _r in (studio.load_roles().get("roles") or []):
+    _rid = _r.get("id")
+    try:
+        if _rid and studio.rvc_trained_epochs(_rid) > 0:
+            EXP = _rid
+            break
+    except Exception:
+        continue
+if not EXP:
+    EXP = plant_probe_exp(100)
 studio._RVC_STATE_CACHE.clear()
-try:
-    if studio.rvc_trained_epochs(EXP) <= 0:
-        EXP = plant_probe_exp(100) or EXP
-except Exception:
-    EXP = plant_probe_exp(100) or EXP
 if not EXP or not os.path.isdir(os.path.join(studio.RVC_ROOT, "logs", EXP)):
     print("  ! 跳过：本机没有 %s 这个 RVC 实验（先训一个角色再跑本脚本）" % EXP)
 else:

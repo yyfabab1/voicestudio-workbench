@@ -129,6 +129,7 @@ function render() {
     return `
     <div class="card" draggable="true" data-role="${r.id}" onclick="openRole('${r.id}')">
       <div class="glow" style="background:${color}"></div>
+      <span class="dragdot" title="按住这张卡可以拖 —— 拖到下面的「歌手」槽就能用它唱歌">⠿ 可拖</span>
       <div class="row1">
         <div class="avatar" style="background:linear-gradient(135deg,${color},${shade(color)})">${esc(initial)}</div>
         <div style="flex:1;min-width:0">
@@ -878,6 +879,27 @@ async function doRvc() {
    后端还在写 ckpt、GPU 还在转，用户却什么都看不到。
    现在把 id 记进 localStorage，页面加载时重新拉回来接上轮询。*/
 const watching = new Map();
+
+/* 每类任务主要吃哪种资源。
+   为什么要标：用户提交的任务"等了很久"时，他看到的是一个不动的进度条，
+   不知道是排队、还是卡死、还是被别的任务挤着。把"谁在占着什么"写出来，
+   他至少知道该等谁。 */
+const JOB_RES = {
+  rvc: ["GPU 训练", "训练会把显存占满，这期间跑合成会明显变慢"],
+  seedvc: ["GPU 微调", "训练会把显存占满，这期间跑合成会明显变慢"],
+  train: ["GPU 训练", "训练会把显存占满，这期间跑合成会明显变慢"],
+  sing: ["GPU 推理", "要跟训练抢显存"],
+  speak: ["GPU 推理", "短，但也要排 GPU 的队"],
+  lyrics: ["GPU 识别", "首次要下 1.5GB 模型"],
+  new_song: ["GPU 作曲", "先作曲再换声，两头都吃显卡"],
+  install_model: ["网络下载", "不吃显卡"],
+  viz: ["CPU 渲染", "不吃显卡，但要占 CPU"],
+  ingest: ["CPU+GPU 拆解", "分离要用显卡"],
+};
+
+function jobRes(kind) {
+  return JOB_RES[kind] || null;
+}
 const LS_JOBS = "vs.watching";
 
 function lsSave() {
@@ -946,7 +968,15 @@ async function restoreJobs() {
     fin = ((await api("/api/jobs?limit=12")).jobs || [])
       .filter((x) => x.state !== "running" && x.state !== "queued");
   } catch (e) { fin = []; }
-  for (const j of fin.slice(0, 2)) {
+  // ★ 只补**最近那一条**（原为 2 条）。
+  //   实测事故：补 2 张之后，左下角抽屉多出约 150px，把页面上同在左下区域的
+  //   可点元素（市场里的作品 chip 就在那一带）盖住了 —— 真鼠标按坐标点下去，
+  //   命中的是任务卡的头部（className 是 jh）或步骤说明（nt），表现为
+  //   「点了没反应」。门禁 verify_market_ui 就是这么红的（4 条判据全是 0 张卡，
+  //   因为 chip 根本没被点到，搜索压根没发起）。
+  //   ⇒ 已结束的卡是「刚才那一次去哪了」的入口，价值在于**能找到**，
+  //     不在于摊在面板上占地方；真的要找更多，顶部「任务」按钮里有完整列表。
+  for (const j of fin.slice(0, 1)) {
     showJobOnce(j.id);
     const el = $("#job-" + j.id);
     if (el) el.dataset.finished = "1";
@@ -1045,6 +1075,7 @@ function ensureJobUI(id, collapsed) {
     <div class="jh" onclick="this.parentNode.classList.toggle('open')">
       <span class="st queued" id="js-${id}">排队</span>
       <b id="jt-${id}">任务</b>
+      <span class="jres" id="jr-${id}" title="这个任务主要吃哪种资源"></span>
       <span class="mini jpause" id="jpz-${id}" title="暂停（显卡会立刻空出来）"
             style="display:none"
             onclick="event.stopPropagation();togglePause('${id}')">⏸</span>
@@ -1256,9 +1287,16 @@ function renderSteps(id, steps, state) {
   };
   box.innerHTML = steps.map(s => {
     const m = META[s.state] || META.todo;
+    // ★「黑盒等待」的解药：正在做的那一步要说人话 + 说还要多久。
+    //   只给步骤名（"语音识别"）配一条不动的进度条，用户会以为卡住了。
+    //   只给正在做的那一步 —— 全部都给的话，完成态那几行也跟着变长，反而找不着重点。
+    const doing = s.state === "doing";
+    const hint = doing && s.hint ? esc(s.hint) : "";
+    const eta = doing && s.eta ? " · 约需 " + fmtSec(s.eta) : "";
     return `<div class="step ${m.cls}">
       <span class="mk">${m.mk}</span>
       <span class="nm">${esc(s.name)}</span>
+      ${hint ? `<span class="sh">${hint}<b class="seta">${eta}</b></span>` : ""}
       ${s.note ? `<span class="nt">${esc(s.note)}</span>` : ""}
     </div>`;
   }).join("");
@@ -1306,6 +1344,14 @@ async function tickJobs() {
     const st = $("#js-" + id), pre = $("#jl-" + id), bar = $("#jb-" + id),
           meta = $("#jn-" + id);
     w.alive = (j.state === "running" || j.state === "queued");
+    w.kind = j.kind; w.jtitle = j.title || j.kind;
+    const jr = $("#jr-" + id), _res = jobRes(j.kind);
+    if (jr) {
+      // 只在任务还活着时才标资源 —— 跑完的任务再挂个"GPU 训练中"是自相矛盾。
+      jr.textContent = (w.alive && _res) ? _res[0] : "";
+      jr.title = _res ? _res[1] : "";
+      jr.style.display = (w.alive && _res) ? "" : "none";
+    }
     if (st) {
       // 暂停是"用户主动停的"，不能只显示"运行中" —— 否则他看着一个不动
       // 的进度条会以为卡死了，然后再点一次暂停（反而变成继续）。
@@ -1320,9 +1366,20 @@ async function tickJobs() {
       const bits = [];
       if (j.paused) bits.push("<b>已暂停</b>（子进程已挂起，显卡空出来了；点 ⏸ 变 ▶ 继续）");
       if (j.detail) bits.push(esc(j.detail));
-      if (j.epochs_total) bits.push("共 " + j.epochs_total + " 轮");
+      // 「已训到 N 轮 / 目标 M 轮」：只写"共 300 轮"的话，用户看不出还剩多少。
+      if (j.epochs_total) {
+        bits.push(j.epochs_done
+          ? "已训到 <b>" + j.epochs_done + "</b> / " + j.epochs_total + " 轮"
+          : "目标 " + j.epochs_total + " 轮");
+      }
       if (j.elapsed) bits.push("已用 " + fmtSec(j.elapsed));
       if (j.eta) bits.push("预计还需 " + fmtSec(j.eta));
+      // 训练面板的预计耗时旁，把已知限制如实说出来：
+      // 用户看到"预计还需 40 分钟"，下一个问题一定是"能不能快点"。
+      // 现在诚实的答案是"加速档还在验证"——而不是偷偷换档、拿质量换速度。
+      if (j.epochs_total && j.eta) {
+        bits.push("<span style='color:var(--txt3)'>当前为稳定档（FP32）；加速档在验证中</span>");
+      }
       if (j.state === "interrupted") bits.push("服务重启，任务在这一步被中断");
       // 取消是"我不要了"，不是"它坏了" —— 说清楚才不会有人对着自己取消的
       // 任务去翻日志找 bug。
@@ -1883,17 +1940,134 @@ const STEM_NAME = { mix: "成品", voice: "人声（干声）", inst: "伴奏", 
 let STEM_OUTS = [];
 let STEM_SPEED = 1;
 
+/* 成品旁那一行质检摘要。
+   ★ 为什么放在成品边上、而不是只留在任务日志里：用户拿到一条成品要回答的第一个
+     问题是"这版能不能用"，然后才决定要不要花几分钟听一遍。让他先听再猜，
+     等于让他自己当质检员 —— 而这正是我们能量出来的东西。
+   ★ 口径用 qc_whole（整曲铺满多窗）优先：单窗那个数是**抽签**抽出来的
+     （同一份成品按窗口位置能报 3.5% 也能报 16.9%，见 studio.py 的实测表）。
+     把抽签的数摆在成品边上，比不给更糟 —— 他会照着它决定要不要重唱。
+   ★ 阈值不在这里另发明，抄 studio.py::describe_qc_whole 的那三条：
+     八度错 >10%、宽松吻合 <75%、错位 >250ms 就是"这次别直接用"。 */
+/* ---- 一句话结论：把"选哪版"从**比对任务**变成**阅读任务** ----
+   现状：12 版历史，每版一行指标（音准 86% / 八度 2% / 抖动 24 音分…），
+   用户还是得自己在脑子里排序。这不该是他的活 —— 指标是我们算的，
+   结论也该我们给。
+   约束：**只用已经算出来的指标**，不新增推理、不额外跑模型。
+   口径仍抄 describe_qc_whole 的三条阈值（八度 >10%、宽松吻合 <75%、
+   错位 >250ms），这样结论和上面的质检徽章不会互相打脸。
+   综合分只用于**排序**（"哪版最稳"），阈值用于**说人话**（"哪里不行"）。 */
+function takeMetrics(o) {
+  const q = o.qc || {}, w = o.qc_whole || {};
+  const pick = (a, b) => (a === null || a === undefined) ? b : a;
+  const num = (v) => {
+    if (v === null || v === undefined || v === "" || !isFinite(Number(v))) return null;
+    return Number(v);
+  };
+  const mr = num(pick(w.match_ratio_loose,
+                     pick(w.match_ratio, pick(q.match_ratio_loose, q.match_ratio))));
+  if (mr === null) return null;              // 没有音准数，就别编结论
+  const oer = num(pick(w.octave_err_ratio, q.octave_err_ratio)) || 0;
+  const dev = num(pick(w.dev_iqr_cents, q.dev_iqr_cents)) || 0;
+  const lag = num(pick(w.lag_ms, q.lag_ms)) || 0;
+  const spread = num(pick(w.spread_ratio, q.spread_ratio));
+  const cl = (x) => Math.max(0, Math.min(1, x));
+  const score =
+    45 * cl((mr - 0.70) / 0.25) +            // 音准吻合：0.70 以下 0 分，0.95 满分
+    20 * (1 - cl(oer / 0.10)) +              // 八度错：10% 归零
+    15 * (1 - cl((dev - 10) / 50)) +         // 音高抖动：10 音分内满分
+    10 * (1 - cl(Math.abs(lag) / 250)) +     // 错位：250ms 归零
+    10 * (spread === null ? 0.7 : 1 - cl(Math.abs(spread - 1) / 0.5));
+  return { mr, oer, dev, lag, spread, score };
+}
+
+function takeRanking(outputs) {
+  const arr = (outputs || []).map(o => ({ o, m: takeMetrics(o) })).filter(x => x.m);
+  if (!arr.length) return { arr: [], best: null };
+  const best = arr.reduce((b, x) => (x.m.score > b.m.score ? x : b), arr[0]);
+  return { arr, best };
+}
+
+/* 在同歌的所有版本里定一句话。
+   ★ 只写"这版最好"没信息量：每版都有长有短。所以能说出**哪一项最强**
+     （相对 12 版里取得第一）就优先说它，再补一个真的没达标的短板。 */
+function takeVerdict(m, peers, isBest, bestM) {
+  if (!m) return "";
+  if (isBest) return "这版最稳，建议直接用";
+  // 84% 是"还能听"的下限：低于它咬字已经糊到影响识别，
+  // 再往上差 1~2 个点只是"没那么准"，不值得用同一句重话。
+  if (m.mr < 0.84) return "音准差一档，咬字偏糊";
+  let con = "";
+  if (m.oer > 0.05) con = "高音偶有跑八度";
+  else if (m.dev > 40) con = "整体略飘";
+  else if (Math.abs(m.lag) > 100) con = m.lag > 0 ? "节奏稍拖" : "节奏略抢";
+  else if (m.spread !== null && Math.abs(m.spread - 1) > 0.3) {
+    con = m.spread < 1 ? "动态偏平" : "动态偏冲";
+  }
+  let adv = "";
+  if ((peers || []).length >= 3) {
+    const top = (get, lower) => {
+      const vals = peers.map(get).filter(v => isFinite(v));
+      if (!vals.length) return false;
+      const t = lower ? Math.min.apply(null, vals) : Math.max.apply(null, vals);
+      if (Math.abs(get(m) - t) > 1e-6) return false;
+      // ★ 并列第一不算"最"：12 版里有 5 版 lag 都是 0ms，
+      //   给每一版都写"节奏最贴"等于什么都没说。只有**唯一**最优才算特长。
+      return vals.filter(v => Math.abs(v - t) <= 1e-6).length === 1;
+    };
+    if (top(x => x.mr, false)) adv = "音最准";
+    else if (top(x => x.oer, true)) adv = "高音最稳";
+    else if (top(x => x.dev, true)) adv = "音高最稳";
+    else if (top(x => Math.abs(x.lag), true)) adv = "节奏最贴";
+    else if (top(x => (x.spread === null ? 9 : Math.abs(x.spread - 1)), true)) {
+      adv = "动态最自然";
+    }
+  }
+  if (adv && con) return adv + "，但" + con;
+  if (adv) return adv + "，其余各项略逊最优版";
+  if (con) return "音准达标，但" + con;
+  // 没有硬伤、也没有单项第一。这时说"整体均衡"等于没说 ——
+  // 把**差得最多的那一项**点出来，用户才知道拿它跟最优版比亏在哪。
+  const b = bestM || null;
+  if (b && b !== m && b.score > m.score) {
+    if (b.mr - m.mr > 0.02) return "各项达标，但音准略逊一筹";
+    if (m.oer - b.oer > 0.02) return "音准达标，但高音不如最优版稳";
+    if (m.dev - b.dev > 5) return "音准达标，但音高比最优版略飘";
+    if (Math.abs(m.spread - 1) - Math.abs(b.spread - 1) > 0.15) {
+      return "各项达标，但动态不如最优版自然";
+    }
+    if (Math.abs(m.lag) - Math.abs(b.lag) > 60) return "各项达标，但节奏不如最优版贴";
+  }
+  return "整体均衡，没有明显短板";
+}
+
 function qcBadge(o) {
-  const q = o.qc;
-  if (!q) return "";
-  const mr = Math.round((q.match_ratio || 0) * 100);
-  const sp = q.spread_ratio == null ? 0 : q.spread_ratio;
+  const q = o.qc || {}, w = o.qc_whole || {};
+  if (!Object.keys(q).length && !Object.keys(w).length) return "";
+  const pick = (a, b) => (a === null || a === undefined) ? b : a;
+  const mrRaw = pick(w.match_ratio_loose,
+                     pick(w.match_ratio, pick(q.match_ratio_loose, q.match_ratio)));
+  const mr = Math.round((mrRaw || 0) * 100);
+  const oer = Math.round((pick(w.octave_err_ratio, q.octave_err_ratio) || 0) * 100);
+  const hasLag = q.lag_ms !== null && q.lag_ms !== undefined;
   const lag = Math.round(q.lag_ms || 0);
-  const ok = sp >= 0.5 && mr >= 50 && Math.abs(lag) <= 250;
-  const cl = ok ? "ok" : "bad";
-  const why = ok ? "" : ` title="音准吻合 ${mr}%、音高起伏比 ${sp.toFixed(2)}、对齐 ${lag}ms —— 有一项不达标，见任务日志里的详细说明"`;
-  return `<div class="qcb ${cl}"${why}>客观质检：音准 ${mr}% · 起伏比 ${sp.toFixed(2)} · 对齐 ${lag}ms` +
-         `${ok ? " · 通过" : " · <b>有问题</b>"}</div>`;
+  const src = w.windows ? "整曲 " + w.windows + " 窗" : "单窗";
+  const okMr = mr >= 75, okOct = oer <= 10, okLag = !hasLag || Math.abs(lag) <= 250;
+  const allOk = okMr && okOct && okLag;
+  const it = (label, val, ok, unit) =>
+    `<span class="qci ${ok ? "ok" : "no"}">${label} ${val}${unit || ""} ${ok ? "✓" : "⚠"}</span>`;
+  const tip = w.worst_octave != null
+    ? ` title="最差的一窗八度错 ${Math.round((w.worst_octave || 0) * 100)}%` +
+      `（第 ${Math.round(w.worst_at || 0)} 秒附近）——听感由最差那段决定；` +
+      `音高抖动 ${Math.round(w.dev_iqr_cents || 0)} 音分"`
+    : "";
+  return `<div class="qcs ${allOk ? "ok" : "bad"}"${tip}>` +
+         `<span class="qct">${src}</span>` +
+         it("音准吻合", mr, okMr, "%") +
+         it("八度错", oer, okOct, "%") +
+         (hasLag ? it("错位", lag, okLag, "ms") : "") +
+         `<span class="qcv">${allOk ? "这版能直接用"
+           : "有一项没达标，建议换一档音高重唱一版对比"}</span></div>`;
 }
 
 function stemsBar(o, idx) {
@@ -1908,7 +2082,9 @@ function stemsBar(o, idx) {
     `<button class="stbtn${k === "mix" ? " on" : ""}${s[k] ? "" : " off"}"
        data-stem="${k}" ${s[k] ? "" : "disabled"}
        onclick="stemPick(this,'${k}')">${STEM_NAME[k]}</button>`).join("");
-  const speeds = [0.5, 0.75, 1].map(v =>
+  // 0.75x / 1x / 1.25x：A/B 比对时慢一点才听得出咬字和音高，
+  // 快一点是"过一遍确认没翻车"。0.5x 太慢没人用，1.5x 会把咬字糊掉。
+  const speeds = [0.75, 1, 1.25].map(v =>
     `<button class="stbtn${v === 1 ? " on" : ""}" data-sp="${v}"
        onclick="stemSpeed(this,${v})">${v}×</button>`).join("");
   return `<div class="stems" data-ab="0" data-idx="${idx || 0}">
@@ -1997,39 +2173,188 @@ function stemCross(r) {
 async function stageShowResult(rid) {
   try {
     const j = await api("/api/role/" + rid);
-    const outs = (j.role.outputs || []).filter(o => o.kind === "singing").slice(-2).reverse();
+    const singing = (j.role.outputs || []).filter(o => o.kind === "singing");
+    window.__stageOutputs = j.role.outputs || [];   // 历史 take 的按钮要按原下标回传
+    const outs = singing.slice(-2).reverse();
     if (!outs.length) return;
     STEM_OUTS = outs;
-    $("#stageOut").innerHTML = outs.map((o, i) => {
+    // 结论要跟**同一首歌的所有版本**比，不是只跟这两条比
+    const rank = takeRanking(j.role.outputs);
+    const peers = rank.arr.map(x => x.m);
+    const cur = outs.map((o, i) => {
       const url = media(o.wav);
       const name = o.wav.split(/[\\/]/).pop();
+      const m = takeMetrics(o);
+      const isMix = !o.track || String(o.track).startsWith("成品");
+      const vd = isMix && m
+        ? takeVerdict(m, peers, rank.best && m.score >= rank.best.m.score - 1e-9,
+                       rank.best && rank.best.m)
+        : "";
       return `<div class="outcard">
         <div class="tt">${esc(o.track || "成品")} · ${o.seconds || "?"} 秒</div>
         <div class="nm">${esc(name)}</div>
         ${qcBadge(o)}
+        ${vd ? `<div class="vd">${esc(vd)}</div>` : ""}
         ${stemsBar(o, i)}
         <div class="row"><a class="btn sm" href="${url}" download>下载这条</a></div>
       </div>`;
     }).join("");
+    $("#stageOut").innerHTML = cur + takeHistory(rid, j.role.outputs || []);
     $("#stageOut").classList.add("on");
   } catch (e) { /* 角色刚好被删 */ }
+}
+
+/* ---- 历史 take：同一首歌出的每一版都留着，带当时的参数和质检 ----
+   为什么需要：先用 pitch=0 唱了一版，又试了 +2，过两天想退回第一版 ——
+   以前只能靠文件名猜哪一版是哪一版（而文件名长得都差不多）。
+   这里存的是**参数快照 + 质检指标 + 时间**，恢复时只是把参数填回输入框或
+   把某条挪回列表末尾，**一次推理都不重跑**。
+   只列「成品」轨（干声轨是同一版的两条记录之一，列出来就是重复）。 */
+function takeHistory(rid, outputs) {
+  const rows = [];
+  outputs.forEach((o, i) => {
+    if (o.kind !== "singing") return;
+    if (o.track && !String(o.track).startsWith("成品")) return;
+    rows.push([o, i]);
+  });
+  // 最新那条就是「当前成品」，剩下的才是历史
+  const hist = rows.slice(0, -1).reverse().slice(0, 12);
+  if (!hist.length) return "";
+  // 12 版放在一起排一次序：结论里的"最稳/最飘"是相对这 12 版说的，
+  // 不是凭空给个形容词。单版拿出来看时不存在"相对"，也就不该有排名口径。
+  const rank = takeRanking(hist.map(([o]) => o));
+  const peers = rank.arr.map(x => x.m);
+  const body = hist.map(([o, i]) => {
+    const p = o.params || {};
+    const bits = [];
+    if (p.pitch !== undefined && p.pitch !== null) {
+      const ask = p.pitch_asked;
+      const sg = (v) => (Number(v) > 0 ? "+" : "") + Number(v);
+      bits.push("音高 " + sg(p.pitch) +
+        (ask !== undefined && ask !== null && Number(ask) !== Number(p.pitch)
+          ? `（原设 ${sg(ask)}，音高体检改判）` : ""));
+    }
+    if (p.index_rate !== undefined && p.index_rate !== null) {
+      bits.push("音色比例 " + p.index_rate);
+    }
+    if (p.engine) bits.push("引擎 " + (p.engine === "rvc" ? "RVC" : p.engine));
+    if (p.nonvocal && p.nonvocal !== "off") bits.push("非歌声段 " + p.nonvocal);
+    if (p.model) bits.push("模型 " + esc(p.model));
+    const m = takeMetrics(o);
+    const vd = m
+      ? takeVerdict(m, peers, rank.best && m.score >= rank.best.m.score - 1e-9,
+                       rank.best && rank.best.m)
+      : "";
+    return `<div class="take">
+      <div class="tt">${esc(o.at || "")}${o.seconds ? " · " + o.seconds + " 秒" : ""}</div>
+      <div class="pp">${bits.length ? bits.join(" · ") : "（这一版没记参数）"}</div>
+      ${qcBadge(o)}
+      ${vd ? `<div class="vd">${esc(vd)}</div>` : ""}
+      <div class="row">
+        ${lazyPlayer(media(o.wav), "", o.seconds)}
+        <button class="btn sm" data-takeload="${i}">载入参数</button>
+        <button class="btn sm" data-takeuse="${i}">设为当前成品</button>
+      </div>
+    </div>`;
+  }).join("");
+  return `<details class="takes"${hist.length > 3 ? "" : " open"}>
+    <summary>历史 take（${hist.length} 版 · 点开可载入参数或退回这一版）</summary>
+    <div class="takelist">${body}</div>
+  </details>`;
+}
+
+/* 把某一版的参数填回翻唱台。**只填界面，不跑任何推理** ——
+   用户要的是"再试一次这个配置"，所以要等他点开始才算数。 */
+function takeLoadParams(o) {
+  const p = o.params || {};
+  const set = (id, v) => { const el = $(id); if (el && v !== undefined && v !== null) el.value = String(v); };
+  set("#sgPitch", p.pitch);
+  set("#sgEngine", p.engine);
+  set("#sgNonvocal", p.nonvocal);
+  if ($("#sgPitchV")) $("#sgPitchV").textContent = String(p.pitch ?? 0);
+  toast("这一版的参数已填回翻唱台（不会自动重跑，点「开始」才算）", "good");
+}
+
+async function takeUse(rid, idx, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const d = await post(`/api/role/${rid}/output-use`, { index: Number(idx) });
+    if (!d.ok) { toast(d.error || "没能设为当前成品", "bad"); return; }
+    toast("已把这一版设为当前成品（文件没动，也没重跑）", "good");
+    await stageShowResult(rid);
+  } catch (e) {
+    toast(e.message || "设为当前成品失败", "bad");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/* 槽位上的落点提示：把"隐藏手势"变成能学的动作。
+   光让槽位变亮，用户只知道"这儿能放"，不知道**放下去会发生什么** ——
+   于是他会犹豫，然后松手松错地方。把结果直接写出来（松开 → 选定演唱者），
+   他才敢松手。放错了也要当场说（这里要的是角色卡，不是文件）。*/
+function slotHint(el, text, bad) {
+  if (!el) return;
+  let t = el.querySelector(".drophint");
+  if (!t) {
+    t = document.createElement("div");
+    t.className = "drophint";
+    el.appendChild(t);
+  }
+  t.textContent = text;
+  t.className = "drophint" + (bad ? " bad" : "");
+}
+
+function slotClearHint(el) {
+  const t = el && el.querySelector(".drophint");
+  if (t) t.remove();
+}
+
+function slotClearHints() {
+  document.querySelectorAll(".slot .drophint").forEach((t) => t.remove());
+}
+
+// 判断这次拖的是"角色卡"还是"文件"：角色卡带自定义 MIME text/role-id。
+// 只看 types 里有没有 Files 是不够的 —— 拖角色卡时 types 里也可能有别的。
+function dragPayloadKind(dt) {
+  const types = Array.from((dt && dt.types) || []);
+  const isRole = types.some((t) => String(t).toLowerCase() === "text/role-id");
+  const isFile = types.includes("Files");
+  return isRole ? "role" : (isFile ? "file" : "");
 }
 
 // 槽位交互：歌手槽点击 = 快速选角色；歌曲槽点击 = 选文件
 function initStage() {
   const singer = $("#slotSinger"), song = $("#slotSong");
-  [["dragover", (e, el) => { e.preventDefault(); el.classList.add("on"); }],
-   ["dragleave", (e, el) => el.classList.remove("on")]].forEach(([ev, fn]) => {
-    document.addEventListener(ev, (e) => {
-      const el = closestEl(e.target, ".slot");
-      if (el) fn(e, el);
-    });
+  const HINT = {
+    singer: { role: "松开 → 选定演唱者", file: "这里要放角色卡，不是文件" },
+    song: { file: "松开 → 用这首歌", role: "这里要放歌曲文件，角色卡放上面那个槽" },
+  };
+  document.addEventListener("dragover", (e) => {
+    const el = closestEl(e.target, ".slot");
+    if (!el) return;
+    e.preventDefault();
+    el.classList.add("on");
+    const kind = dragPayloadKind(e.dataTransfer);
+    if (!kind) return;
+    if (el.id === "slotSinger") {
+      slotHint(el, HINT.singer[kind] || "", kind !== "role");
+    } else if (el.id === "slotSong") {
+      slotHint(el, HINT.song[kind] || "", kind !== "file");
+    }
+  });
+  document.addEventListener("dragleave", (e) => {
+    const el = closestEl(e.target, ".slot");
+    if (!el) return;
+    el.classList.remove("on");
+    slotClearHint(el);
   });
   document.addEventListener("drop", async (e) => {
     const el = closestEl(e.target, ".slot");
     if (!el) return;
     e.preventDefault();
     el.classList.remove("on");
+    slotClearHints();
     const rid = e.dataTransfer.getData("text/role-id");
     const f = e.dataTransfer.files && e.dataTransfer.files[0];
     if (el.id === "slotSinger") {
@@ -2048,6 +2373,18 @@ function initStage() {
   };
   song.onclick = () => { pickerMode = "stageSong"; $("#filePicker").click(); };
   $("#btnOneClick").onclick = stageOneClick;
+  // 历史 take 的两个按钮。成品区是 innerHTML 整块重画的，所以只能事件委托，
+  // 不能给按钮直接挂 onclick（重画一次就掉一次）。
+  $("#stageOut").addEventListener("click", (e) => {
+    if (!STAGE_ROLE) return;
+    const b = closestEl(e.target, "[data-takeload],[data-takeuse]");
+    if (!b) return;
+    const idx = b.dataset.takeload !== undefined ? b.dataset.takeload : b.dataset.takeuse;
+    const o = (window.__stageOutputs || [])[Number(idx)];
+    if (!o) { toast("这条成品已经不在列表里了，刷新一下", "bad"); return; }
+    if (b.dataset.takeload !== undefined) takeLoadParams(o);
+    else takeUse(STAGE_ROLE.id, idx, b);
+  });
   stageRefreshBtn();
 }
 
@@ -2092,9 +2429,14 @@ function busyGuard(btn, tipSel) {
   //   以前是 watching.size > 0，而 watching 里也会为"刚才跑完的任务"留一条
   //   （为了让用户还能翻回去看）——于是刚做完一件事、界面上还挂着那张卡，
   //   再点任何训练都会被这句"还有任务在跑"挡回来，而其实什么都没在跑。
-  const busy = Array.from(watching.values()).some(w => w.alive);
-  if (busy) {
-    toast("还有任务在跑（看左下角进度），等它完再来", "bad");
+  const w = Array.from(watching.values()).find(x => x.alive);
+  if (w) {
+    // ★ 说清楚"谁在占着、占的是什么"，而不是一句"还有任务在跑"。
+    //   用户真正的疑问是"为什么我的任务要等" —— 答不上来他就会以为卡死了。
+    const r = jobRes(w.kind);
+    toast(`「${w.jtitle || "上一个任务"}」还在跑${r ? "（" + r[0] + "）" : ""}，` +
+          `等它完再来。${r && r[0].indexOf("训练") >= 0
+            ? "训练会把显存占满，硬塞一个合成进去两个都会变慢。" : ""}`, "bad");
     return true;
   }
   if (btn) btn.disabled = true;
@@ -2528,4 +2870,47 @@ function navInit() {
   window.addEventListener("scroll", navSync, { passive: true });
   window.addEventListener("resize", navSync);
   navSync();
+}
+
+/* ---- 门禁快照：把「这套东西被验证过没有」摆在页面底部 ----
+   34 道回归门禁平时只活在终端里。用户（以及一周后的自己）看到一个新按钮时，
+   有权知道它有没有被判据覆盖过。这里只**读** data/gate_snapshot.json，
+   绝不在页面刷新时触发跑门禁 —— 一轮全量要跑很久。 */
+async function loadGateSnapshot() {
+  const box = $("#gateSnap");
+  if (!box) return;
+  let d;
+  try { d = await api("/api/gate-snapshot"); } catch (e) { return; }
+  const s = d && d.snap;
+  if (!s) return;                       // 还没跑过全量：宁可什么都不显示，也不编一个数
+  const pf = s.platform || {};
+  const ok = !!s.pass;
+  const bits = [
+    `<b>${esc(s.at)}</b>`,
+    `${s.gates_ok}/${s.gates} 关通过`,
+    `${s.checks} 条判据${s.checks_bad ? "（<b class='no'>" + s.checks_bad + " 条红</b>）" : "全绿"}`,
+  ];
+  if (pf.gpu) bits.push(esc(pf.gpu));
+  if (pf.os) bits.push(esc(pf.os));
+  // 每关判据数跟上一份快照比。为什么要把这句摆出来：
+  // 1332 这个数字本身不可信 —— 某关从 48 掉到 40、总数不变时，
+  // 快照看着一切正常，实际有一整个分支没跑。让"被守护"这件事可见。
+  const df = s.diff || {};
+  const dfText = df.text ? `<span class="gsdiff${df.warn ? " warn" : ""}">${esc(df.text)}</span>` : "";
+  const triaged = ok && !!(s.failed && s.failed.length);
+  box.innerHTML = `<span class="gsd ${ok ? "ok" : "bad"}" title="最近一次全量回归（_run_regression.sh）的结果。
+不是实时跑的：数据来自 data/gate_snapshot.json，重跑一遍门禁才会更新。
+退出码由判红分诊决定：全绿 0；全是假红/未执行也放行 0（会标注）；真回归/不稳定 1。">` +
+    `<span class="gsm">${triaged ? "✓ 回归门禁通过（分诊放行）" : (ok ? "✓ 回归门禁全绿" : "⚠ 最近一次回归有没过的关")}</span>` +
+    bits.join(" · ") +
+    (s.failed && s.failed.length
+      ? (ok
+        // 放行但批跑红过：退出码由分诊结论决定，这里必须把这层说清楚，
+        // 否则"全绿"两个字会把"这一轮其实红过 3 关"抹掉。
+        ? ` · 批跑时 ${s.failed.length} 关曾红（${s.failed.map(esc).join("、")}），分诊判为假红/未执行`
+        : ` · 没过：${s.failed.map(esc).join("、")}`)
+      : "") +
+    dfText +
+    `</span>`;
+  box.style.display = "";
 }
