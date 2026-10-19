@@ -2038,6 +2038,64 @@ ROLE_VOICE_SEGS = 60     # 一个角色的声纹中心最多抽多少段来算�
 VOICE_MIN_DUR = 2.0      # 和 diarize.py 的质量门控保持一致
 VOICE_MIN_VOICED = 0.30
 
+# --------------------------------------------------------------------
+# 段级纯净度（2026-10-19 新增）
+#
+# 老板的原话：「不会把其他声音切进去当素材……会自检，把不属于这个声音的音频剔除」。
+#
+# ★ 先量清楚问题在哪，别照直觉改（`_probe_segpurity*.py` 的实测）：
+#   半段(2.5s) 口径下量了三组对照——
+#       同一个人换句话（同人拼）       p50 = 0.313
+#       换了一个人（异人拼）           p50 = 0.614
+#       **真实切片自己的前半 vs 后半** p50 = 0.232
+#   ⇒ 真实段内比"同一个人换句话"还小 ⇒ **段内本来就没什么混音**。
+#     所以"把段切得更碎"是错的：会把完整的句子切烂，还捞不出东西。
+#     真问题是**段与段之间**：一堆素材里可能混着别人的**整段**，而簇级只取中位数，
+#     中位数照样过阈值 ⇒ 那些段被一并并进去，训练集被静默污染。
+#
+# ★ 于是判据落在"整段"这个和认人同口径的层上。
+#
+# ★★ 标定踩过一个坑，记下来别再犯（`_probe_segthr.py`）：
+#   第一版是"拿大帝 120 段算中心，再拿**这同一批**去比" ⇒ 同人 p95 只有 0.134，
+#   看着安全带 0.13~0.33 宽得很，于是阈值定了 0.25。
+#   **这是自比，等于拿尺子量它自己** —— 真实场景是「**新素材** vs **已有角色中心**」，
+#   两批内容不同、中心本身还是个抽样估计，距离必然更大。
+#   端到端一试（`verify_speaker_match` 当场红）：**20 段同人素材被剔掉 2 段（10%）**。
+#   改成**跨批**（A 批 60 段算中心，B 批另外 60 段当新素材，两批不重叠）重量：
+#       跨批同人  p50 = 0.092  p90 = 0.142  p95 = 0.182  **max = 0.253**
+#       异人      p05 = 0.374  p10 = 0.391  p50 = 0.467
+#   阈值扫描（跨批口径）：
+#       0.25 → 误杀同人 1.7%（正是上面那 10% 的来源）
+#       0.28 / 0.30 / 0.32 / 0.35 → **误杀 0% 且漏放 0%**
+#       0.38 → 开始漏放异人 5.4%
+#   ⇒ 取 **0.30**：同人 max 0.253 与异人 p05 0.374 的中点，两头各留 ~0.07 余量。
+#
+# ⚠ 另外注意：簇级 MATCH_DIST = 0.21 比这个值**小**，不是写反了。
+#   簇级取的是「一堆段距离的中位数」（稳定，分布窄），段级是**单个段**（噪声大，
+#   分布宽得多）。同一个人在两个层上的水位本来就不同，别拿一个去套另一个。
+#
+# ⚠ 和 MATCH_DIST 一样，样本里**只有 1 个异人**（大帝 vs 阿塔尼斯）。"漏放 0%"
+#   只能说是在这一个人身上没漏。取向仍然定死：**宁可多剔，也不错并** ——
+#   错并是静默污染训练集，多剔只是少几段素材、而且剔掉的进了「待归类」还能救回来。
+SEG_MATCH_DIST = 0.30    # 单段到角色中心的门槛（跨批口径：同人 max 0.253 / 异人 p05 0.374）
+SEG_MIN_DUR = 2.0        # 比这更短的段声纹不可信，段级复核直接跳过（留给簇级判）
+
+# 簇内离群剔除（`purge_outliers`）—— 管的是**没认出来、要新建角色**的那一堆。
+# 那一堆里可能混着杂音或另一个人的段，没有角色中心可对照，只能拿这一堆自己的
+# 中心当尺子，用 中位数 + MAD 把明显离群的挑出去。
+#
+# ★ 实测（`_probe_outlier.py`，大帝 120 段当纯净堆；再混 25 段阿塔尼斯当脏堆）：
+#     med + K·MAD **没有绝对下限**时，纯净堆会被砍掉 **4.2%**（K=3.5）——
+#     同一批素材的正常尾巴也被当成离群，白损失素材。加上 floor 之后归零：
+#       K=3.5 floor=0.30 → 纯净堆剔除 **0/120**；脏堆抓到异人 16/25（64%），误杀 0
+#       K=4.0 floor=0.35 → 纯净堆 0/120；抓到 9/25（36%）—— 更保守，召回更低
+#   ⇒ 取 K=3.5 + floor=0.30：误杀 0%，召回 64%。
+#     召回只有六成是故意的：剩下的异人段和大帝挨得太近，硬抓就会开始误杀。
+#     取向仍然是"宁可少剔，也不错杀"——错杀是真素材没了，漏掉的还能靠段级复核补。
+OUTLIER_K = 3.5          # MAD 倍数
+OUTLIER_FLOOR = 0.30     # ★ 绝对下限，缺了它纯净堆会被砍（见上）
+OUTLIER_MIN_SEGS = 10    # 段太少时 MAD 不稳，不做簇内剔除
+
 
 def _emb_center(embs):
     """一组 embedding 的均值，再 L2 归一化。返回 list（好写进 json）。"""
@@ -2219,31 +2277,49 @@ def ensure_role_voices(job=None, rids=None):
     return made, skipped
 
 
+def _known_voices():
+    """库里**有资格**参与认人的声纹中心。返回 (known, stale, thin)。
+
+    known = [(rid, name, center, dim), ...]
+
+    两种角色直接出局，理由都是实测过的（见 MATCH_DIST 上面的注释）：
+      · kind 不是当前 VOICE_KIND —— 换了向量种类之后的老缓存，维度对不上，
+        比起来会静默截断（长度不一样的向量 zip 一下只比对到短的那截）。
+      · 中心段数 < MIN_CENTER_SEGS —— **薄中心是真正的坑**：实测 <30 段时
+        "异人"侧 p10 会掉到 0.2266~0.2404，低于阈值 ⇒ 别人的素材会被并进来。
+    """
+    known = []
+    stale = thin = 0
+    for r in load_roles()["roles"]:
+        v = r.get("voice")
+        if not (v and v.get("center")):
+            continue
+        if v.get("kind") != VOICE_KIND:
+            # 老缓存（换了向量种类）—— 上层应该已经用 ensure_role_voices 补算过；
+            # 还在这儿说明补算失败/被跳过。绝不拿它比（维度对不上会静默截断）。
+            stale += 1
+            continue
+        # ★ 中心段数不够 ⇒ 不出任候选。这类角色仍然留着中心（素材攒够了自己会变
+        #   "实心"），只是这次不参与认人。
+        if int(v.get("n") or 0) < MIN_CENTER_SEGS:
+            thin += 1
+            continue
+        known.append((r["id"], r.get("name") or r["id"], v["center"], v.get("dim")))
+    return known, stale, thin
+
+
 def match_clusters(job, groups, feats):
     """给每个簇找「这是谁」。返回 ({簇标签: 角色id}, [给人看的说明])。
 
     只认**过了阈值**的；认不出的返回 None，由上层新建角色。
     ★ 判据是"这一堆里的每一段到角色中心距离的**中位数**"，不是"两个中心之间的距离"
       —— 原因和实测数据见 MATCH_DIST 上面的注释（中心对中心会被抽样噪声带跑）。
+    ★ 这一层**只管整堆**。堆里混着别人的整段时中位数照样能过阈值，
+      那些段要靠 `refine_segments()` 逐段复核挑出来 —— 两层各管一件事，别合并。
     """
     meta = {f["file"]: f for f in feats}
-    known = []
-    skipped_dim = stale = thin = 0
-    for r in load_roles()["roles"]:
-        v = r.get("voice")
-        if v and v.get("center"):
-            if v.get("kind") != VOICE_KIND:
-                # 老缓存（换了向量种类）—— 上层应该已经用 ensure_role_voices 补算过；
-                # 还在这儿说明补算失败/被跳过。绝不拿它比（维度对不上会静默截断）。
-                stale += 1
-                continue
-            # ★ 中心段数不够 ⇒ 不出任候选。实测：<30 段时"异人"侧 p10 会掉到
-            #   0.2266~0.2404，低于阈值 ⇒ 别人的素材会被并进来（薄中心把异人距离整体压低）。
-            #   这类角色仍然留着中心（素材攒够了自己会变"实心"），只是这次不参与认人。
-            if int(v.get("n") or 0) < MIN_CENTER_SEGS:
-                thin += 1
-                continue
-            known.append((r["id"], r.get("name") or r["id"], v["center"], v.get("dim")))
+    known, stale, thin = _known_voices()
+    skipped_dim = 0
     if not known:
         bits = []
         if stale:
@@ -2301,6 +2377,131 @@ def match_clusters(job, groups, feats):
                          " ⇒ 新建角色"
                          % (lab, len(segs), kn, d, MATCH_DIST, second))
     return assign, notes
+
+
+def refine_segments(job, groups, feats, assign):
+    """一堆素材认成某人（或决定新建）之后，**逐段**再核一次。
+
+    为什么需要这一层（实测依据见 SEG_MATCH_DIST 的注释）：簇级只取中位数，
+    一堆里混进别人的**整段**时中位数照样过阈值 ⇒ 那些段被一并并进角色，
+    训练集被静默污染。这一层按段判，能把它们挑出来。
+
+    三种结果：
+      · 这一段离某个角色 ≤ SEG_MATCH_DIST   ⇒ **归它**（可能是从原堆改判过来的）
+      · 谁都不像，但原堆已经认成了某个角色  ⇒ **剔除**（不像还塞进去就是污染）
+      · 谁都不像，且原堆本来就要新建角色    ⇒ 留在新建那堆里（它本来就是个新的人）
+
+    返回 (owner, rejected, notes)：
+      owner    = {file: rid} —— 明确归属某个角色的段（上层拿它重新分堆）
+      rejected = {file, ...} —— 明确判为"谁都不像、却混在被认出的堆里"⇒ 该剔除的段
+      两者都不在的段 = 段级没表态（太短 / 没提着声纹），**留在原堆**，不许当成剔除
+      —— 这个区分很要紧：混为一谈会把"太短的段"也一并剔掉，白白损失素材。
+    """
+    meta = {f["file"]: f for f in feats}
+    known, _stale, _thin = _known_voices()
+    if not known:
+        return {}, set(), ["库里没有可用声纹中心，跳过段级复核（这次按簇级结果走）"]
+
+    owner, rejected = {}, set()
+    kept = moved = dropped = skipped = 0
+    for lab in sorted(groups, key=lambda x: str(x)):
+        try:
+            if int(lab) < 0:      # 没挂上的杂音堆：本来就要进待归类，不复核
+                continue
+        except (TypeError, ValueError):
+            pass
+        target = assign.get(lab)
+        for f in groups[lab]:
+            name = f.get("file")
+            if not name:
+                continue
+            v = (meta.get(name) or {}).get(VOICE_KIND)
+            if not v:
+                continue
+            # ★ 太短的段声纹不可信（和 diarize 的 MIN_DUR 同口径）：拿噪声去判归属
+            #   只会乱剔，这种段交回簇级结果，这一层不动它。
+            if float(f.get("dur") or 0) < SEG_MIN_DUR:
+                skipped += 1
+                continue
+            scored = []
+            for rid, rname, cen, dim in known:
+                if dim != len(v):
+                    continue
+                d = _emb_dist(v, cen)
+                if d is not None:
+                    scored.append((d, rid, rname))
+            if not scored:
+                continue
+            scored.sort(key=lambda t: t[0])
+            d, rid, rname = scored[0]
+            if d <= SEG_MATCH_DIST:
+                owner[name] = rid
+                # rid != target 就有两种：从"认成张三"改判给李四；或原堆本要新建、
+                # 结果这段其实是库里已有的李四。两种都算"改判"。
+                if rid != target:
+                    moved += 1
+                else:
+                    kept += 1
+            elif target:
+                # 谁都不像，但这堆被认成了某个人 ⇒ 这段是混进来的，剔掉。
+                # 若 target 为空（这堆本来就要新建），则什么都不做 = 留在新角色里。
+                rejected.add(name)
+                dropped += 1
+    notes = ["段级复核：归位 %d 段，改判给更近的角色 %d 段，剔除 %d 段（不像却混在被认出的堆里）"
+             % (kept, moved, dropped)]
+    if skipped:
+        notes.append("另有 %d 段短于 %.1f 秒，声纹不可信不参与段级复核（仍按簇级走）"
+                     % (skipped, SEG_MIN_DUR))
+    return owner, rejected, notes
+
+
+def purge_outliers(job, segs, feats):
+    """没认出来、准备新建角色的那一堆里，把**明显不属于这一堆**的段挑出去。
+
+    和 `refine_segments` 的区别，别混着用：
+      · refine_segments —— 有角色中心可对照，判"这段像不像库里那个人"（认人场景）
+      · purge_outliers  —— **没有**角色中心可对照，只能拿这一堆自己的中心当尺子
+                           （新建角色场景：这一堆里混了杂音/别人的段）
+
+    返回 (keep, outliers, note)：
+      keep     —— 留下的（含"段级没法评估"的段，那些一律留着不乱动）
+      outliers —— 判为离群的段，由上层送进「待归类」，不丢弃
+    """
+    meta = {f["file"]: f for f in feats}
+    pool = []
+    for f in segs:
+        v = (meta.get(f.get("file")) or {}).get(VOICE_KIND)
+        # 太短的段声纹不可信（和 SEG_MIN_DUR 同口径），不参与统计
+        if v and float(f.get("dur") or 0) >= SEG_MIN_DUR:
+            pool.append((f, v))
+    if len(pool) < OUTLIER_MIN_SEGS:
+        return segs, [], ("这一堆只有 %d 段可评估（<%d），MAD 不稳，跳过簇内剔除"
+                          % (len(pool), OUTLIER_MIN_SEGS))
+
+    import statistics
+    c = _emb_center([v for _, v in pool])
+    ds = []
+    for f, v in pool:
+        d = _emb_dist(v, c)
+        ds.append(d if d is not None else 0.0)
+    m = statistics.median(ds)
+    mad = statistics.median([abs(x - m) for x in ds])
+    thr = max(m + OUTLIER_K * mad, OUTLIER_FLOOR)
+
+    evaluated = {}
+    keep, out = [], []
+    for (f, _v), d in zip(pool, ds):
+        evaluated[f.get("file")] = True
+        (out if d > thr else keep).append(f)
+    # 没参与评估的段（太短 / 没声纹）：一律留下，不许因为"没表态"就被剔掉
+    for f in segs:
+        if not evaluated.get(f.get("file")):
+            keep.append(f)
+    note = ("这一堆 %d 段：簇内中位 %.3f、MAD %.3f ⇒ 门槛 %.3f，剔出 %d 段离群"
+            % (len(pool), m, mad, thr, len(out))) if out else \
+           ("这一堆 %d 段：簇内中位 %.3f、MAD %.3f ⇒ 门槛 %.3f，没有离群段"
+            % (len(pool), m, mad, thr))
+    return keep, out, note
 
 
 def step_asr(job, slice_dir, out_dir, lang="zh"):
@@ -2789,6 +2990,76 @@ def job_ingest(job, video=None, n_speakers=None, uvr=True, lang="zh", epochs=Non
                              % len(assign)) if assign
                  else "一堆都没认出来，全部新建角色")
 
+        # ---- 段级纯净度复核：一堆认成某人之后，还要逐段确认 ----
+        # 簇级只取中位数，堆里混着别人的**整段**时中位数照样过阈值
+        # （实测依据见 SEG_MATCH_DIST 的注释）。这一层按段判，并把结果
+        # **反写回 groups**：改判给别人的段单独成堆、剔掉的段丢进待归类，
+        # 后面「建立角色」那段循环完全不用改。
+        begin_step(job, "段级复核", "逐段确认归属，把不属于这个声音的挑出去")
+        owner, rejected, rnotes = refine_segments(job, groups, feats, assign)
+        for t in rnotes:
+            log(job, "  " + t)
+        if owner or rejected:
+            moved_out, dropped_out = {}, []
+            kept_groups = {}
+            for lab in list(groups.keys()):
+                target = assign.get(lab)
+                keep = []
+                for f in groups[lab]:
+                    nm = f.get("file")
+                    if nm in rejected:
+                        dropped_out.append(f)                    # 明确判不像 ⇒ 剔出
+                        continue
+                    o = owner.get(nm)
+                    if o is None or o == target:
+                        keep.append(f)                           # 没表态 或 本来就是它
+                    else:
+                        moved_out.setdefault(o, []).append(f)    # 改判给更近的那个角色
+                kept_groups[lab] = keep
+            groups = kept_groups
+            for rid, segs in moved_out.items():
+                # 用一个字符串 key 单独成堆 + 登记进 assign ⇒ 后面那段循环
+                # 会走"并到已有角色"那条路，不用为它另写一套分支。
+                key = "seg:" + str(rid)
+                groups[key] = segs
+                assign[key] = rid
+                log(job, "  %d 段其实更像「%s」：并到那个角色，不留在原堆"
+                    % (len(segs), (get_role(rid) or {}).get("name") or rid))
+            if dropped_out:
+                # ★ 剔出来的段**不丢弃**：丢进「待归类的片段」，用户还能救回来。
+                groups.setdefault(-1, [])
+                groups[-1].extend(dropped_out)
+                log(job, "  %d 段谁都不像：放进「待归类的片段」（没丢，可随时归位）"
+                    % len(dropped_out))
+        end_step(job, True, "段级复核完成（总 %d 堆）" % len(groups))
+
+    # ---- 簇内离群剔除：没认出来的堆（要新建角色）里可能还混着杂音或别人的段 ----
+    # 那一堆没有角色中心可对照，只能拿它自己的中心当尺子（见 purge_outliers）。
+    # 已认人的堆**不在这儿动** —— 它们有角色中心，段级复核那一层判得更准。
+    if not append_to:
+        kept2, dropped2 = {}, []
+        for lab in list(groups.keys()):
+            if assign.get(lab):
+                kept2[lab] = groups[lab]
+                continue
+            try:
+                if int(lab) < 0:              # 杂音堆本来就要进待归类，不重复剔
+                    kept2[lab] = groups[lab]
+                    continue
+            except (TypeError, ValueError):
+                pass
+            keep, out, note = purge_outliers(job, groups[lab], feats)
+            kept2[lab] = keep
+            if out:
+                dropped2.extend(out)
+                log(job, "  " + note)
+        groups = kept2
+        if dropped2:
+            groups.setdefault(-1, [])
+            groups[-1].extend(dropped2)
+            log(job, "  簇内离群：%d 段不像这一堆的主流声音 ⇒ 放进「待归类的片段」（没丢）"
+                % len(dropped2))
+
     begin_step(job, "语音识别", "听出每句说了什么字")
     texts = step_asr(job, slice_dir, os.path.join(work, "04_asr"), lang)
     end_step(job, True, "识别了 %d 句" % len(texts))
@@ -2805,6 +3076,10 @@ def job_ingest(job, video=None, n_speakers=None, uvr=True, lang="zh", epochs=Non
     names = [os.path.splitext(s)[0] for s in sources]
     for gi, lab in enumerate(sorted(groups, key=lambda x: str(x))):
         segs = groups[lab]
+        # ★ 段级复核可能把这一堆的段全都挪走（改判给别人 / 剔进待归类）。
+        #   这时候不许再建一个空角色出来 —— 空卡片在界面上是个"幽灵"。
+        if not segs:
+            continue
         # ★ lab 有两种形状：auto 模式是聚类给的**整数**标签（-1 = 没挂上的
         #   杂音），per_video 模式是我自己起的 "v0"/"v1" 这种**字符串**键。
         #   直接写 `lab < 0` 在 per_video 上会 TypeError（str 和 int 比不了）——
