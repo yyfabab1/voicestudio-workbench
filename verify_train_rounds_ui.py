@@ -616,12 +616,30 @@ def main():
         check("弹出了角色列表", poll(page, "!!document.querySelector('.poplist')", secs=5))
         nopt = page.js("document.querySelectorAll('.poplist .opt[data-rid]').length")
         check("列表里有角色可选", bool(nopt), "%s 个" % nopt)
+        # ★ 先记下"我到底要点哪一个"，点完按 **id** 对账。
+        #   旧判据是 `"阿塔尼斯" in slot or rid in slot`：
+        #     ① 前半句挂在一个**写死的角色名**上 —— 2026-10-18 把那批角色清掉之后
+        #        库里只剩「大帝」，名字再也匹配不上 ⇒ 恒红（跟产品好坏无关）；
+        #     ② 后半句 `rid in slot` 是**恒假**的 —— 槽位只渲染名字/素材数，
+        #        从不渲染 id（见 app.js 的 stagePaintRoleSlot），所以那半句一直是摆设。
+        #   ⇒ 换成"点之前先证明还没选它（负对照）+ 点完按 id 对"，跟库里是谁无关。
+        opt_rid = page.js("document.querySelector('.poplist .opt[data-rid]').dataset.rid")
+        opt_txt = page.js("document.querySelector('.poplist .opt[data-rid]').textContent") or ""
+        CUR = "(typeof STAGE_ROLE!=='undefined' && STAGE_ROLE)?STAGE_ROLE.id:''"
+        before_rid = page.js(CUR)
+        check("负对照：点之前槽位里不是这个角色（证明下一条不是恒真）",
+              before_rid != opt_rid, "点前=%r 目标=%r" % (before_rid, opt_rid))
         top = page.click(".poplist .opt[data-rid]", "（角色选项）")
         check("真鼠标点得中角色选项", bool(top), "命中=%s" % top)
         time.sleep(0.6)
         slot = page.js("document.querySelector('#slotSinger').textContent") or ""
-        check("槽位里替换成了这个角色", "阿塔尼斯" in slot or rid in slot, slot.strip()[:60])
-        hasrvc = page.js("!!(ROLES.find(x=>x.id===%s)||{}).rvc" % json.dumps(rid))
+        got_rid = page.js(CUR)
+        check("★ 槽位里替换成了这个角色（按 id 对账，不靠写死的名字）",
+              got_rid == opt_rid, "槽里=%r 点了=%r" % (got_rid, opt_rid))
+        opt_label = opt_txt.replace("\u2713", "").strip()
+        check("槽位文字里写明了是谁", bool(opt_label) and opt_label in slot,
+              slot.strip()[:60])
+        hasrvc = page.js("!!(ROLES.find(x=>x.id===%s)||{}).rvc" % json.dumps(opt_rid))
         if hasrvc:
             check("角色已有歌声模型 -> 槽里写明直接开唱", "已有歌声模型" in slot, slot.strip()[:60])
         else:
