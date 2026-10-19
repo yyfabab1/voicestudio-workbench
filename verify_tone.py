@@ -39,8 +39,34 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-ROLE_ID = "rfdb2828c"          # 阿塔尼斯：手上素材最多的那个（212 段）
+import studio                                                    # noqa: E402
+
 GSV = r"D:\BaiduNetdiskDownload\GPT-SoVITS(1)\v5最新版\GPT-SoVITS-v5-20261005nvidia50x0\GPT-SoVITS-v2pro-20261006nvidia50x0"
+
+
+def pick_role_id():
+    """★ 不能写死角色 id。
+
+    这里原本是 `ROLE_ID = "rfdb2828c"`（阿塔尼斯，212 段）。2026-10-18 把那批
+    角色清掉之后，这个 id 已经不在库里 ⇒ 这一关从那天起恒红在「拿不到索引 /
+    没有 slices / 拿不到 GPT 权重」上，而**三处红的都不是产品问题**。
+    （跟 `verify_train_rounds_ui` 里那条写死「阿塔尼斯」的判据是同一类失误。）
+
+    ⇒ 每次现挑：素材最多的那个；同等条件下优先有 GPT 权重的（D 段真合成要它）。
+    """
+    try:
+        rs = [r for r in (studio.load_roles().get("roles") or [])
+              if not r.get("pending")]
+    except Exception:                                             # noqa: BLE001
+        return ""
+    if not rs:
+        return ""
+    with_ckpt = [r for r in rs if (r.get("model") or {}).get("ckpt")]
+    pool = with_ckpt or rs
+    return (max(pool, key=lambda r: len(r.get("segments") or [])).get("id") or "")
+
+
+ROLE_ID = pick_role_id()
 
 OK, BAD = [], []
 
