@@ -79,6 +79,7 @@ verify_music:PY_VENV
 verify_train_rounds_ui:PY_VENV
 verify_lyric_ui:PY_VENV
 verify_speaker_match:PY_VENV
+verify_seg_purity:PY_MANAGED
 verify_seedvc:PY_VENV
 verify_ncm:PY_VENV
 verify_ncmwatch:PY_VENV
