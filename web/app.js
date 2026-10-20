@@ -680,8 +680,13 @@ async function doSing(preview) {
   const body = {
     kind: "sing", role: CUR.id, song: pickedSong,
     pitch: pickedPitch(),
-    index_rate: parseFloat($("#inpIdx").value || "0.75"),
+    // ★ 0.5 不是随便写的：studio 里实测过 index_rate 的四档（音色 vs 八度错
+    //   是反的），0.50 是"音色已经明显变好、音准还没开始掉"的交叉点。
+    //   这里原来写 0.75 —— 用户不改就会用 0.75，八度错会从 9.9% 升到 11.5%，
+    //   正好越过音高体检的坏档线。界面默认值必须和后端默认值同源。
+    index_rate: parseFloat($("#inpIdx").value || "0.5"),
     engine: ($("#selEngine") && $("#selEngine").value) || "rvc",
+    hf: ($("#selHf") && $("#selHf").value) || "off",
   };
   // 试听小样：只跑一小段（后端会分离整首但有缓存），几十秒到一两分钟就能听。
   // 关键差别是它**不写进角色成品清单** —— 只是给耳朵听个响。
@@ -1706,6 +1711,93 @@ function stageLyricHint() {
 });
 stageLyricHint();
 
+/* 「原歌词校对」：把认出来的每一句摊开给用户改错字。
+   为什么必须有这一步（不是锦上添花）：
+     原词（ref_text）是要送进模型**做音素化**的 —— 官方 align_lrc_sentence_level
+     把 `|` 换空格、把标点归一成逗号，文本只提供"唱哪些音素"。认错一个字，
+     它就照着错的那个字唱。而 whisper 在歌唱上的错字是肉眼可见的。
+     靠调扩散步数救不回来，只能让用户改一句 —— 比整首重唱便宜得多。
+   改完存回服务端，改词时用的就是改过的那份（studio.lyric_segments_for 直接读它）。 */
+let PROOF = [];
+
+function fmtT(s) {
+  s = Math.max(0, Number(s) || 0);
+  return Math.floor(s / 60) + ":" + (s % 60).toFixed(1).padStart(4, "0");
+}
+
+function renderProof() {
+  const list = $("#proofList");
+  if (!list) return;
+  list.innerHTML = "";
+  PROOF.forEach((x, i) => {
+    const row = document.createElement("div");
+    row.className = "proof-row";
+    row.innerHTML =
+      `<span class="proof-no">${i + 1}</span>`
+      + `<span class="proof-tm" title="这一句在歌里的位置">${fmtT(x.start)} → ${fmtT(x.end)}</span>`
+      + `<input class="inp sm proof-tx" data-i="${i}" value="${esc(x.text || "")}">`
+      + `<button class="btn sm proof-del" data-del="${i}" title="删掉这一句">✕</button>`;
+    list.appendChild(row);
+  });
+  list.querySelectorAll("input.proof-tx").forEach((el) => {
+    el.addEventListener("input", () => {
+      const i = parseInt(el.dataset.i, 10);
+      if (PROOF[i]) PROOF[i].text = el.value;
+    });
+  });
+  list.querySelectorAll("button.proof-del").forEach((el) => {
+    el.addEventListener("click", () => {
+      PROOF.splice(parseInt(el.dataset.del, 10), 1);
+      renderProof();
+    });
+  });
+}
+
+async function loadProof() {
+  const box = $("#proofBox");
+  const list = $("#proofList");
+  if (!box || !list || !STAGE_SONG) return;
+  try {
+    // 档位要跟着界面上选的那档走：medium 和 large 是两份不同的缓存，
+    // 不带上它，用精准档认完再刷新页面就会读回标准档那份（看似"没变准"）。
+    const asr = ($("#sgAsr") && $("#sgAsr").value) || "medium";
+    const j = await api("/api/lyrics?path=" + encodeURIComponent(STAGE_SONG)
+      + "&lang=zh&asr=" + encodeURIComponent(asr));
+    if (!j.ok || !(j.segments || []).length) { box.style.display = "none"; return; }
+    PROOF = j.segments;
+    renderProof();
+    box.style.display = "";
+    const h = $("#proofHint");
+    if (h) h.textContent = j.proofread ? "已校对过" : "";
+  } catch (e) {
+    // 服务是旧进程时没有这个接口 —— 悄悄收起，别拿报错吓用户
+    box.style.display = "none";
+  }
+}
+
+const _proofSaveBtn = $("#btnProofSave");
+if (_proofSaveBtn) {
+  _proofSaveBtn.addEventListener("click", async () => {
+    if (!STAGE_SONG) { toast("先把歌拖进②号槽", "bad"); return; }
+    if (!PROOF.length) { toast("还没有可保存的句子", "bad"); return; }
+    _proofSaveBtn.disabled = true;
+    try {
+      const j = await post("/api/lyrics/save",
+        { path: STAGE_SONG, segments: PROOF, lang: "zh",
+          asr: ($("#sgAsr") && $("#sgAsr").value) || "medium" });
+      PROOF = j.segments || PROOF;
+      const box = $("#sgOrig");
+      if (box && j.line) { box.value = j.line; stageLyricHint(); }
+      const h = $("#proofHint");
+      if (h) h.textContent = "已保存，改词会用这一份";
+      toast("校对已保存 —— 改词会按这一份来唱", "ok");
+    } catch (e) {
+      toast(e.message || "保存失败", "bad");
+    }
+    _proofSaveBtn.disabled = false;
+  });
+}
+
 /* 「自动识别原歌词」：从歌里把人声认出来，按句填进原词栏。
    为什么需要它 —— 改词**必须**填原词（YingMusic 靠原词把新词对到原曲旋律上），
    而这一步以前是整条链上唯一还需要手工的：用户得自己把原词抄/搜出来。
@@ -1719,10 +1811,25 @@ if (_autoLyricBtn) {
       return;
     }
     const hint = $("#autoLyricHint");
+    // 「正确歌词」框里填了东西就一起送过去：识别完按它把错字订正掉。
+    // 这一步是改词质量最划算的投入 —— 歌词网上就有，认错一个字就得重唱一整首。
+    const refTxt = ($("#sgRef") && $("#sgRef").value || "").trim();
+    // 识别档位：标准档快，精准档（large-v3）认错字明显更少。
+    // 首次用精准档要下 3.1 GB，所以在按钮上先把话说清楚，别让人以为卡死。
+    const asr = ($("#sgAsr") && $("#sgAsr").value) || "medium";
     _autoLyricBtn.disabled = true;
-    if (hint) hint.textContent = "识别中（分离+识别，通常一两分钟）…";
+    if (hint) {
+      hint.textContent = asr === "large"
+        ? (refTxt
+          ? "精准档识别中（首次要下 3.1G 模型，请稍候；之后按你给的歌词订正错字）…"
+          : "精准档识别中（首次要下 3.1G 模型，请稍候）…")
+        : (refTxt
+          ? "识别中（会按你给的歌词订正错字，一两分钟）…"
+          : "识别中（分离+识别，通常一两分钟）…");
+    }
     try {
-      const r = await post("/api/jobs", { kind: "lyrics", song: STAGE_SONG, lang: "zh" });
+      const r = await post("/api/jobs",
+        { kind: "lyrics", song: STAGE_SONG, lang: "zh", ref: refTxt, asr });
       watchJob(r.job.id, async () => {
         _autoLyricBtn.disabled = false;
         let line = "";
@@ -1730,6 +1837,7 @@ if (_autoLyricBtn) {
           const st = await api("/api/job/" + r.job.id);
           line = ((st.job || {}).lyric_result || {}).line || "";
         } catch (e) { /* 拿不到就当没识别出来 */ }
+        await loadProof();
         if (!line) {
           if (hint) hint.textContent = "没识别出内容 —— 可以手动填";
           toast("没识别出歌词，看看任务卡的说明", "bad");
@@ -1844,6 +1952,7 @@ function stageSetSong(path, name) {
   slot.innerHTML = `<div class="slot-ph"><div class="who">🎵 ${esc(name || path.split(/[\\/]/).pop())}</div>
     <div class="meta">已就位，点「一键合成」出成品</div></div>`;
   stageRefreshBtn();
+  loadProof();
 }
 
 function stageRefreshBtn() {
@@ -1860,6 +1969,8 @@ async function stagePickSong(f) {
   const j = await r.json();
   if (!r.ok) { toast(j.error || "上传失败", "bad"); return; }
   stageSetSong(j.path, j.from_video ? (f.name + " 的音轨") : f.name);
+  // 这首歌以前校对过的话，切进来就该直接摊开给他看（不用重新识别一遍）
+  loadProof();
   // 视频要抽音轨，可能要几十秒 —— 不明说的话用户会以为卡住了
   toast(j.note ? j.note + "，歌已就位" : "歌已就位", "good");
 }
@@ -1907,7 +2018,11 @@ async function stageOneClick() {
       nonvocal: ($("#sgNonvocal") && $("#sgNonvocal").value) || "keep",
       engine: ($("#sgEngine") && $("#sgEngine").value) || "rvc",
     };
-    if (_edit) { body.orig_lyric = _ol; body.new_lyric = _nl; }
+    if (_edit) {
+      body.orig_lyric = _ol; body.new_lyric = _nl;
+      // 采样步数交给用户选：步数越少越容易唱飘，默认 32（官方默认）
+      body.lyric_nfe = ($("#sgNfe") && $("#sgNfe").value) || "32";
+    }
     if ($("#sgQ").value === "custom") body.epochs = rounds;
     const j = await post("/api/jobs", body);
     watchJob(j.job.id, () => {
@@ -2913,4 +3028,54 @@ async function loadGateSnapshot() {
     dfText +
     `</span>`;
   box.style.display = "";
+}
+
+/* ============ 服务新鲜度自检 ============
+   问题（真事，不是假设）：改了代码但没重启服务，界面上的新功能就是不出现，
+   看起来像"这个功能没做"。门禁那边有 svc_probe 挡住，但**用户看不到门禁**。
+   所以这里直接问 /api/health：进程启动时间 比 磁盘上代码的最新修改时间 还早
+   ⇒ 就是旧进程，明明白白告诉他重启。 */
+async function checkServiceFresh() {
+  let h;
+  try {
+    const r = await fetch("/api/health", { cache: "no-store" });
+    if (!r.ok) return;                    // 没有这个接口 = 更老的服务，下面也不用提示了
+    h = await r.json();
+  } catch (e) { return; }
+  if (!h || !h.started_ts || !h.code_mtime) return;
+  // 60 秒余量：启动瞬间正好在写盘的情况不算"旧"
+  if (h.code_mtime - h.started_ts < 60) return;
+  try {
+    if (sessionStorage.getItem("vsStale") === String(h.started_ts)) return;
+  } catch (e) {}
+
+  const mins = Math.max(1, Math.round((Date.now() / 1000 - h.started_ts) / 60));
+  const bar = document.createElement("div");
+  bar.id = "staleBar";
+  bar.style.cssText =
+    "position:sticky;top:0;z-index:9999;background:#fff4d6;color:#6b4a00;" +
+    "border-bottom:1px solid #e8c56a;padding:9px 14px;font-size:13px;line-height:1.6;" +
+    "display:flex;gap:10px;align-items:flex-start";
+  bar.innerHTML =
+    `<span style="font-size:15px">⚠</span>` +
+    `<span style="flex:1">这个服务是 <b>${esc(h.started_at || "")}</b> 起的（已经跑了 ${mins} 分钟），` +
+    `而代码在那之后改过 —— <b>新功能不会生效</b>。请关掉黑窗口，双击 <b>启动VoiceStudio.bat</b> 重启一次。` +
+    `</span>`;
+  const x = document.createElement("button");
+  x.type = "button";
+  x.textContent = "知道了";
+  x.style.cssText = "background:#6b4a00;color:#fff;border:0;border-radius:6px;" +
+    "padding:4px 10px;cursor:pointer;font-size:12px;flex:none";
+  x.onclick = function () {
+    bar.remove();
+    try { sessionStorage.setItem("vsStale", String(h.started_ts)); } catch (e) {}
+  };
+  bar.appendChild(x);
+  document.body.insertBefore(bar, document.body.firstChild);
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", checkServiceFresh);
+} else {
+  checkServiceFresh();
 }

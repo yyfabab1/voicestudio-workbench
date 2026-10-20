@@ -28,6 +28,9 @@ import re
 import sys
 import traceback
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lyric_plan  # noqa: E402  歌词规划（参考歌词订正 + 乐句分块），纯标准库
+
 # 句末/句中能断句的标点（中文 + 英文）
 _BREAK = "。！？!?；;…"
 _COMMA = "，,、：:　 "
@@ -116,6 +119,12 @@ def main():
     ap.add_argument("--max-sec", type=float, default=14.0)
     ap.add_argument("--dump-words", action="store_true",
                     help="把词级时间戳明细也写进 JSON（排查分句问题时用）")
+    # ★ 参考歌词：网上搜到的**正确**歌词原文。给进来有两重用处 ——
+    #   ① 当 initial_prompt，让 whisper 往这个方向认（官方推荐的提准技巧）；
+    #   ② 认完之后拿它跟结果对齐，把错字换掉，时间戳继续用识别给的。
+    #   这是"改词唱出来是错词"最省事的解法：歌词网上就有，认错一个字就得重唱一整首。
+    ap.add_argument("--ref", default="", help="参考歌词原文")
+    ap.add_argument("--ref-file", default="", help="参考歌词文件（utf-8）")
     a = ap.parse_args()
 
     if not os.path.isfile(a.wav):
@@ -136,13 +145,24 @@ def main():
     sys.stdout.flush()
     model = WhisperModel(a.model, device=device, compute_type=ct)
 
+    ref_text = a.ref
+    if a.ref_file:
+        try:
+            with open(a.ref_file, "r", encoding="utf-8") as f:
+                ref_text = f.read()
+        except Exception as e:
+            print("[warn] 参考歌词读不了（%s），按无参考继续" % e)
+            ref_text = ""
+
     lang = None if a.lang in ("auto", "") else a.lang
-    print("识别中…")
+    print("识别中…" + ("（带参考歌词，会顺手纠正错字）" if ref_text.strip() else ""))
     sys.stdout.flush()
     segments, info = model.transcribe(
         a.wav, language=lang, beam_size=5, vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=400),
-        word_timestamps=True, condition_on_previous_text=False)
+        word_timestamps=True, condition_on_previous_text=False,
+        # 参考歌词当提示词：whisper 会明显更倾向输出这些字（尤其专有名词/生僻词）
+        initial_prompt=(ref_text.strip()[:400] if ref_text.strip() else None))
     words = []
     for seg in segments:
         for w in (seg.words or []):
@@ -160,6 +180,32 @@ def main():
         "segments": lines,
         "line": "|".join(l["text"] for l in lines),
     }
+
+    # 拿参考歌词订一遍错字。时间戳一个字节都不动 —— 它认得准的是"什么时候在唱"，
+    # 认不准的是"唱的哪个字"，两件事分开解决。
+    if ref_text.strip() and lines:
+        try:
+            fixed, rep = lyric_plan.align_ref(lines, ref_text)
+            if rep.get("ok"):
+                out["segments"] = fixed
+                out["line"] = "|".join(x["text"] for x in fixed)
+                out["ref"] = {
+                    "lines": rep.get("ref_lines", 0),
+                    "used": rep.get("ref_used", 0),
+                    "changed": rep.get("changed", 0),
+                    "kept": rep.get("kept", 0),
+                    "unmatched_ref_n": rep.get("unmatched_ref_n", 0),
+                }
+                out["asr_raw"] = lines  # 留一份没订正的，便于对照/回退
+                print("参考歌词订正：%d 句里有 %d 句被换成了正确歌词"
+                      "（参考 %d 句，用到 %d 句，还有 %d 句没落到时间轴上）"
+                      % (len(lines), rep.get("changed", 0),
+                         rep.get("ref_lines", 0), rep.get("ref_used", 0),
+                         rep.get("unmatched_ref_n", 0)))
+                for ln in lyric_plan.preview_diff(lines, ref_text)[0]:
+                    print(ln)
+        except Exception as e:
+            print("[warn] 参考歌词订正没跑成（%s），用原始识别结果" % e)
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=1)
     if a.dump_words:

@@ -313,23 +313,6 @@ def _disc_sprite(r, color, cover=None):
     return Image.fromarray(arr, "RGBA"), None
 
 
-def find_font(size, bold=False):
-    """找一个能显示中文的字体。找不到就返回 None（PIL 会用内置位图字体）。"""
-    cands = ["msyhbd.ttc", "msyh.ttc", "simhei.ttf", "Dengb.ttf", "Deng.ttf",
-             "arialbd.ttf", "arial.ttf"]
-    root = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Fonts")
-    if bold:
-        cands = ["msyhbd.ttc"] + cands
-    for c in cands:
-        p = os.path.join(root, c)
-        if os.path.exists(p):
-            try:
-                return ImageFont.truetype(p, size)
-            except Exception:                                # noqa: BLE001
-                continue
-    return None
-
-
 # ---------------------------------------------------------------- 场景
 
 def _make_particles(sc, dust=1.0):

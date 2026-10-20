@@ -287,11 +287,6 @@ def _cc_lookup_page(uid):
     return ""
 
 
-def cc_prepare(items):
-    """占位：ccmixter 搜索阶段已把文件页一并取回，无需额外预处理。"""
-    return items
-
-
 # ---------------------------------------------------------------- FMA
 # Free Music Archive。上一轮我判它"搜索页纯 JS 渲染、抓不到"，那次是错的 ——
 # 错因是在沙箱里跑，网络被拦。现在无沙箱实测：
@@ -569,10 +564,6 @@ def _src_fma():
 
 
 SOURCES = [_src_ccmixter(), _src_fma()]
-
-
-def source_list():
-    return SOURCES
 
 
 def _dispatch(src, action, *a, **kw):

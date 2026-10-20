@@ -4223,6 +4223,66 @@ def _rvc_quality_args(rms_mix_rate=None, protect=None):
                                                    max(0.0, min(0.5, p)))
 
 
+# ------------------------------------------------ 高频补偿（"闷"的解药）
+#
+# ★ 这一组默认值是**实测**出来的（2026-10-20，大帝模型 + 同一段 5 秒人声，
+#   同一套参数 pitch 0 / rmvpe / index 0.50 / rms 0.25 / protect 0.33，
+#   只改这一个变量；指标 = 99% 累积能量的截止频率、4~8k 频段能量占比、
+#   谱质心，以及用 eres2net 的 sv 向量算的"距角色中心"余弦距离）：
+#
+#     版本            带宽99   4-8k    谱质心    音色距角色中心
+#     原唱            11.5k   0.1498   1964Hz     0.4878   ← 本来就该不像
+#     RVC 纯输出       5.7k   0.0178     435Hz     0.2022   ← 最像角色，也最闷
+#     ＋补偿 fc=5500   9.5k   0.0303     670Hz     0.3015
+#     ＋补偿 fc=4500   9.5k   0.0447     735Hz     0.3316
+#     ＋补偿 fc=3200   9.4k   0.0590     829Hz     0.3637   ← 最清楚，也最不像
+#
+#   机理（这才是"AI 感太重 / 咬字糊"的物理来源，调参救不了）：
+#     RVC 的声码器在 5.7kHz 以上几乎没有能量，而齿音（s/sh/ts）主要在 4~8kHz ——
+#     输出里这一段的能量只剩原唱的 **1/10**。所以听起来"闷、糊、不像真人在唱"。
+#     这不是 protect/index 能调的：那两个参数管的是音高和清辅音保护，
+#     管不了"上面根本没有东西"。
+#
+#   手段 = 交叉合成（stages/seedvc_cli.py cross）：
+#     fc 以下取 RVC（音色 / 共振峰），fc 以上取原唱（辅音 / 气声）。
+#   代价写在表里：补得越狠越清楚，但原唱的气声也带进来，音色距离从 0.20
+#   一路涨到 0.36（项目自己的标定：同人 p50=0.178，异人 p25=0.26 ——
+#   0.36 已经越过"异人"线，听感上会开始"更像原唱"）。
+#   ⇒ **默认关**。不能替用户决定他更看重"清楚"还是"像角色"，
+#     所以给三档 + 上面这张表，让他自己听。
+HF_FREQ = {"off": 0, "light": 5500, "mid": 4500, "strong": 3200}
+HF_LEVELS = ("off", "light", "mid", "strong")
+HF_LABEL = {
+    "off": "关 —— 音色最像角色（实测 0.2022），但有效带宽只有 5.7kHz，偏闷",
+    "light": "轻 —— 带宽 9.5kHz，音色 0.3015（几乎不变，仍像角色）",
+    "mid": "中 —— 更清楚的齿音与气声，音色 0.3316（推荐起步）",
+    "strong": "强 —— 最清楚（4~8k 能量 3.3 倍），音色 0.3637（会开始像原唱）",
+}
+
+
+def hf_brighten(job, rvc_wav, src_vocal, out_wav, level):
+    """把 RVC 干声的高频补回来。失败就原样返回（绝不拖死整首歌）。
+
+    为什么用"原唱的高频"而不是自己合成：RVC 在 5.7k 以上没有可信内容，
+    谐波外推出来的是"电子味"；而原唱那条轨的高频是**真的**辅音和气声 ——
+    只是它带着原唱音色，所以必须限幅（只取 fc 以上那一段），并且给用户开关。
+    """
+    fc = HF_FREQ.get(level) or 0
+    if not fc:
+        return rvc_wav, None
+    if not src_vocal or not os.path.isfile(src_vocal):
+        log(job, "  [warn] 找不到原始人声轨，跳过高频补偿")
+        return rvc_wav, None
+    rc, txt = run(job, '"%s" -s "%s" cross "%s" "%s" "%s" %d 1200'
+                  % (RVC_PY, os.path.join(STAGES, "seedvc_cli.py"),
+                     rvc_wav, src_vocal, out_wav, fc),
+                  cwd=RVC_ROOT, timeout=1800)
+    if rc != 0 or not os.path.isfile(out_wav):
+        log(job, "  [warn] 高频补偿失败（%s），用未补偿的干声继续" % _tail(txt, 2))
+        return rvc_wav, None
+    return out_wav, {"level": level, "fc": fc}
+
+
 # ------------------------------------------------ 非歌声段保护（"吹口哨就吼"的正解）
 #
 # 机制（实测，不是推测）：RVC 认不出"口哨"和"唱"的区别 —— 分离后的人声轨里，
@@ -4564,17 +4624,42 @@ def _find_rvc_index(model_name):
     if not os.path.isdir(root):
         return None
     le, ls = exp.lower(), stem.lower()
+    # ★ 归属判定（2026-10-20 修的真 bug）：索引名 `<模型>_added_...` 里
+    #   「第一个 _added_ 之前」就是它服务的那个模型。原来的写法用
+    #   `ls in low` / `_<exp>_v2` 这类"名字里出现过"的宽松判定 + 第一个命中就
+    #   return，导致同一个角色下多试过几个模型之后：
+    #       ra500fb92.pth（v1 / 256 维）配上了 ra500fb92_v2_klm48 的索引（768 维）
+    #   ⇒ RVC 里 faiss 的 `assert d == self.d` 崩 ⇒ 整首歌"歌声转换失败"。
+    #   RVC 自己的 get_index_path_from_model 有同一个毛病（它的 tie-break 是
+    #   -mtime，最新的赢），所以这里必须比它更严，而且要和 stages/rvc_infer.py
+    #   的 pick_index() 保持同一口径 —— 否则界面说"用索引"，推理那边却在降级。
+    def _owner(name):
+        s = os.path.splitext(name)[0].lower()
+        i = s.find("_added_")
+        return s[:i] if i > 0 else ""
+
+    best, best_mt = None, -1.0
     for dirpath, _, files in os.walk(root):
         for name in files:
             if not name.lower().endswith(".index") or "trained" in name.lower():
                 continue
+            own = _owner(name)
             low = os.path.splitext(name)[0].lower()
-            if (low.startswith(le + "_added_")
-                    or ("_" + le + "_v1") in low
-                    or ("_" + le + "_v2") in low
-                    or ls in low):
-                return os.path.join(dirpath, name)
-    return None
+            if own:
+                if own not in (ls, le):
+                    continue
+            elif not (low.startswith(le + "_added_")
+                      or ("_" + le + "_v1") in low
+                      or ("_" + le + "_v2") in low):
+                continue
+            p = os.path.join(dirpath, name)
+            try:
+                mt = os.path.getmtime(p)
+            except OSError:
+                continue
+            if mt > best_mt:
+                best, best_mt = p, mt
+    return best
 
 
 def _ckpt_ep(f):
@@ -5001,45 +5086,100 @@ def speak_role(job, rid, texts, lang="zh"):
 #      而句数配不上时长正是"改完词后段唱乱"的根因（踩过）。
 # 模型走 ModelScope（国内可直连），只下 1.5GB 一次。
 
-WHISPER_SUBDIR = "faster-whisper-medium"
+# 歌词识别的可选档位。**medium 是默认**：1.5 GB、8G 显存稳、几秒钟出结果。
+# large-v3 是「精准」档：3.1 GB，中文/歌声上的错字明显更少（Whisper 系列里
+# 规模带来的收益在歌唱这种"发音被拉长"的场景尤其明显 —— medium 常把
+# 一个字听成形近字，large-v3 的声学建模更扛得住）。代价是慢 2~3 倍、多吃显存，
+# 所以做成**可选**而不是一刀切换掉。
+#
+# singing 是「歌声专用」档：whisper-medium 在 **M4Singer**（中文歌唱语料，
+# 20 歌手 / 419 首 / 29.7 小时）上全参数微调的版本。
+#   ★ 它不是"更准"，是"**错的地方不一样**" —— 实测（同一条人声轨 224.9 秒，
+#     16 个人工可确认的歌词片段做锚点）：medium 97.8% / singing 89.7% /
+#     large 88.8%。singing 在「捍卫神族的荣誉」「狂热的信徒」「腐蚀的灵魂」
+#     这些 medium 会听错成容誉/心度的位置上更稳，但在「誓死冲锋」上反而不如
+#     medium。⇒ 它存在的意义是**多一次机会**：这档认不出来换那档，
+#     而不是宣称全面更好。
+ASR_SIZES = {"medium": "faster-whisper-medium",
+             "large": "faster-whisper-large-v3",
+             "singing": "faster-whisper-m4singer"}
+ASR_DEFAULT = "medium"
 LYRIC_CACHE = os.path.join(DATA, "cache", "lyrics")
 
 
-def whisper_dir():
-    return os.path.join(HERE, "models", WHISPER_SUBDIR)
+def asr_size_norm(s):
+    """把前端/命令行传来的各种写法归一到内部档位名。
+
+    未知写法一律退回默认档 —— 宁可少一个功能，也别让一个拼错的参数
+    把整条识别链路搞崩（这类"参数写错就崩"的坑这个项目踩过不止一次）。
+    """
+    k = (s or "").strip().lower().replace("_", "-")
+    if k in ("large", "large-v3", "largev3", "big", "精准"):
+        return "large"
+    if k in ("singing", "m4singer", "sing", "歌声", "歌声专用", "专用"):
+        return "singing"
+    return ASR_DEFAULT
 
 
-def whisper_ready():
-    d = whisper_dir()
+def whisper_dir(size=None):
+    return os.path.join(HERE, "models", ASR_SIZES[asr_size_norm(size)])
+
+
+def whisper_ready(size=None):
+    d = whisper_dir(size)
     return all(os.path.isfile(os.path.join(d, f))
                for f in ("model.bin", "config.json", "tokenizer.json"))
 
 
-def ensure_whisper(job):
-    if whisper_ready():
+def ensure_whisper(job, size=None):
+    sz = asr_size_norm(size)
+    if whisper_ready(sz):
         return True
-    log(job, "  第一次用「自动歌词」，要下语音识别模型（约 1.5 GB，走国内镜像），只下一次")
+    if sz == "singing":
+        # ★ 歌声专用档**不做自动下载**：它在上游只发布了 transformers 格式
+        #   （safetensors），要先用 ctranslate2 转成 faster-whisper 能吃的目录，
+        #   而转换器要 transformers>=4.56（runtime 里是 4.51.3，别的环节在用）。
+        #   本机已经转好放在 models/faster-whisper-m4singer；万一丢了，
+        #   照 tools/convert_whisper_ct2.py 里的步骤重来一次即可。
+        #   与其让它在后台自动跑一条我测不全的链路，不如把话说清楚。
+        log(job, "  [warn] 歌声专用档的权重不在：%s" % whisper_dir(sz))
+        return False
+    mb = "3.1 GB（精准档，识别更准但要下一会儿）" if sz == "large" else "1.5 GB"
+    log(job, "  第一次用「自动歌词」，要下语音识别模型（约 %s，走国内镜像），只下一次" % mb)
+    # dl_whisper.py 里 large 档用的是 HF 仓库名 large-v3，这里要传真名
     rc, out = run(job, '"%s" -s "%s" --dir "%s" --size %s'
                   % (PY, os.path.join(STAGES, "dl_whisper.py"),
-                     os.path.join(HERE, "models"), WHISPER_SUBDIR.split("-")[-1]),
+                     os.path.join(HERE, "models"),
+                     "large-v3" if sz == "large" else "medium"),
                   timeout=7200)
-    if rc != 0 or not whisper_ready():
+    if rc != 0 or not whisper_ready(sz):
         log(job, "  [warn] 识别模型没准备好：%s" % _tail(out, 3))
         return False
     return True
 
 
-def recognize_lyrics(job, song_path, lang="zh", sep_model=None, use_cache=True):
+def recognize_lyrics(job, song_path, lang="zh", sep_model=None, use_cache=True,
+                     ref_text=None, asr_size=None):
     """自动识别一首歌的歌词。返回 {"line": "...", "segments": [...], ...}。
 
     失败抛 Fail —— 这个功能是用户主动点的，失败了要让他看见原因
     （而不是安静地返回空字符串，那样他会以为"这歌没词"）。
+
+    ref_text = 用户粘进来的**正确歌词**。给了它就有两重作用：
+      ① 当 whisper 的提示词，让识别往上靠；
+      ② 认完之后拿它把错字换掉（时间戳不变）。
+    给了参考歌词就**不复用缓存** —— 要重新认一次才能和参考对上，
+    但认完会写回同一个缓存文件，所以之后没参考的那次也用的是订正过的版本。
+
+    asr_size = 识别档位（medium / large）。**它进缓存键**：换档位就是换模型，
+    拿上一档的结果来顶替会让人以为"精准档也没变准"。
     """
+    sz = asr_size_norm(asr_size)
     if not song_path or not os.path.isfile(song_path):
         raise Fail("歌曲文件不存在：%s" % song_path)
-    if not ensure_whisper(job):
-        raise Fail("语音识别模型没准备好。可以手动把 faster-whisper-medium 放到：\n  %s"
-                   % whisper_dir())
+    if not ensure_whisper(job, sz):
+        raise Fail("语音识别模型没准备好。可以手动把 %s 放到：\n  %s"
+                   % (ASR_SIZES[sz], whisper_dir(sz)))
 
     job["stage"] = "识别歌词"
     begin_step(job, "分离人声", "歌词得从人声里认；顺手复用翻唱那份分离缓存，不白跑。")
@@ -5047,17 +5187,17 @@ def recognize_lyrics(job, song_path, lang="zh", sep_model=None, use_cache=True):
     end_step(job, True, "人声轨就绪")
 
     os.makedirs(LYRIC_CACHE, exist_ok=True)
-    # 缓存键复用分离那套（路径+大小+mtime+模型），额外带上语种 ——
-    # 换了语种要重认（上一次的结论对不上）。
-    out_json = os.path.join(LYRIC_CACHE, _sep_cache_key(song_path, "lyrics|%s" % lang) + ".json")
-    if use_cache and os.path.isfile(out_json):
+    # 缓存键复用分离那套（路径+大小+mtime+模型），额外带上**语种和识别档位** ——
+    # 换了语种/换了模型都要重认（上一次的结论对不上）。
+    out_json = lyric_cache_path(song_path, lang, sz)
+    if use_cache and not (ref_text or "").strip() and os.path.isfile(out_json):
         with contextlib.suppress(Exception):
             with open(out_json, encoding="utf-8") as f:
                 d = json.load(f)
             log(job, "  复用上次的识别结果（%d 句）" % len(d.get("segments") or []))
             return d
 
-    begin_step(job, "识别歌词（faster-whisper）",
+    begin_step(job, "识别歌词（faster-whisper %s）" % ("精准档" if sz == "large" else "标准档"),
                "按词级时间戳，把这首歌在唱什么折成一句一句 —— 直接填进改词台的「原歌词」栏。"
                "第一次要加载模型（十几秒），之后很快。")
     tmp = os.path.join(LYRIC_CACHE, "_asr_in.wav")
@@ -5066,9 +5206,22 @@ def recognize_lyrics(job, song_path, lang="zh", sep_model=None, use_cache=True):
     if rc != 0:
         end_step(job, False, "人声轨转码失败")
         raise Fail("人声轨转码失败：%s" % _tail(o1, 2))
-    rc, out = run(job, '"%s" -s "%s" --wav "%s" --out "%s" --model "%s" --lang %s'
+    # 参考歌词走文件传：中文 + 引号 + 换行进 Windows 命令行会被转义搞坏
+    # （改词那边的歌词就是这么传的，同一个坑不踩第二次）。
+    ref_arg = ""
+    if (ref_text or "").strip():
+        try:
+            fp = os.path.join(LYRIC_CACHE, "_ref.txt")
+            with open(fp, "w", encoding="utf-8") as f:
+                f.write(ref_text)
+            ref_arg = ' --ref-file "%s"' % fp
+            log(job, "  带上了你给的歌词（%d 字）当参照 —— 识别完会按它订正错字"
+                % len(ref_text.strip()))
+        except Exception:
+            ref_arg = ""
+    rc, out = run(job, '"%s" -s "%s" --wav "%s" --out "%s" --model "%s" --lang %s%s'
                   % (PY, os.path.join(STAGES, "lyrics_asr.py"), tmp, out_json,
-                     whisper_dir(), lang), timeout=3600,
+                     whisper_dir(sz), lang, ref_arg), timeout=3600,
                   on_line=lambda ln: _pct_from_line(job, ln))
     with contextlib.suppress(Exception):
         os.remove(tmp)
@@ -5082,20 +5235,158 @@ def recognize_lyrics(job, song_path, lang="zh", sep_model=None, use_cache=True):
     return d
 
 
-def lyrics_job(job, song_path, lang="zh", sep_model=None):
+def lyrics_job(job, song_path, lang="zh", sep_model=None, ref_text=None,
+               asr_size=None):
     """「自动歌词」的任务体：把识别结果挂到 job 上，前端完成后回填输入框。"""
-    d = recognize_lyrics(job, song_path, lang=lang, sep_model=sep_model)
+    sz = asr_size_norm(asr_size)
+    d = recognize_lyrics(job, song_path, lang=lang, sep_model=sep_model,
+                         ref_text=ref_text, asr_size=sz)
+    # 把档位记进结果里：界面要能显示"这份是精准档认的"，
+    # 用户才好判断"要不要再花几分钟用精准档重认一次"。
+    with contextlib.suppress(Exception):
+        p = lyric_cache_path(song_path, lang, sz)
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8") as f:
+                dd = json.load(f)
+            dd["asr_size"] = sz
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(dd, f, ensure_ascii=False, indent=1)
+            d["asr_size"] = sz
     job["lyric_result"] = {
         "line": d.get("line") or "",
         "segments": d.get("segments") or [],
         "duration": d.get("duration") or 0,
         "song": os.path.basename(song_path),
+        "ref": d.get("ref") or None,
+        "asr_size": sz,
     }
     log(job, "  识别结果：%s" % ((d.get("line") or "")[:160]))
     return d
 
 
-def rewrite_lyrics(job, vocal_wav, orig_lyric, new_lyric, out_wav, nfe=16):
+def lyric_cache_path(song_path, lang="zh", size=None):
+    """歌词缓存文件。**档位进键**：medium 和 large 是两套结果，不能互相顶替。"""
+    return os.path.join(LYRIC_CACHE,
+                        _sep_cache_key(song_path, "lyrics|%s|%s"
+                                       % (lang, asr_size_norm(size))) + ".json")
+
+
+def load_lyric_cache(song_path, lang="zh", size=None):
+    """读出这首歌的歌词缓存（识别结果 / 校对结果），没有就返回 None。
+
+    兼容：2026-10-20 之前只有一档模型，缓存键里没有档位。那份产物就是
+    medium 认的，所以**只有默认档**允许回退去读旧文件 —— 已经认过的歌
+    不会因为这次升级就被判成"没识别过"，得重花一两分钟。
+    """
+    if not song_path:
+        return None
+    sz = asr_size_norm(size)
+    p = lyric_cache_path(song_path, lang, sz)
+    if not os.path.isfile(p) and sz == ASR_DEFAULT:
+        old = os.path.join(LYRIC_CACHE,
+                           _sep_cache_key(song_path, "lyrics|%s" % lang) + ".json")
+        if os.path.isfile(old):
+            p = old
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_lyric_segments(song_path, segments, lang="zh", line=None, size=None):
+    """把**用户校对过**的分句写回缓存，返回写好的那份。
+
+    为什么要能改：原词是要送进模型做音素化的，认错一个字就唱错一个字，
+    而 whisper 在歌唱上的错字是肉眼可见的。用户自己改一句，比让整首歌
+    带着错字重唱一遍便宜得多 —— 所以这一份必须能存下来，
+    而且**存的就是改词时要用的那一份**（lyric_segments_for 直接读它）。
+
+    校验（宁可拒、不可存坏数据）：
+      · 时间必须递增且非负，end 不早于 start；
+      · 至少一句有文本；
+      · 文本里不能有 `|`（它是句子分隔符，混进来会让句数算错）。
+    """
+    d = load_lyric_cache(song_path, lang, size)
+    if d is None:
+        d = {"lang": lang, "duration": 0, "words": 0}
+    if not isinstance(segments, list) or not segments:
+        raise Fail("没有可保存的句子")
+    # 清洗规则放在 lyric_plan 里（纯逻辑），门禁才能几秒钟验一遍，
+    # 而不是"改完还得真起一次服务才知道有没有写坏"。
+    if STAGES not in sys.path:
+        sys.path.insert(0, STAGES)
+    from lyric_plan import clean_segments
+    clean, dropped = clean_segments(segments)
+    if not clean:
+        raise Fail("没有一句是有效的（要有文本，且时间是数字）")
+    d["segments"] = clean
+    d["line"] = (line if isinstance(line, str) and line.strip()
+                 else "|".join(x["text"] for x in clean))
+    d["proofread"] = True
+    d["proofread_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    d["asr_size"] = asr_size_norm(size)
+    os.makedirs(LYRIC_CACHE, exist_ok=True)
+    with open(lyric_cache_path(song_path, lang, size), "w", encoding="utf-8") as f:
+        json.dump(d, f, ensure_ascii=False, indent=1)
+    return d
+
+
+def lyric_segments_for(song_path, orig_lyric, lang="zh", offset=0.0, dur=None,
+                       size=None):
+    """找回「原歌词」每句的**时间戳**（同一首歌上次识别的那份）。
+
+    为什么改词非它不可：改词是**分块**生成的（约 28 秒一块），每一块只有拿到
+    "这块真正在唱哪几句"，新词才对得上乐句。没有时间戳就只能按句数均分，
+    而歌里有前奏和间奏（实测一份 25 句的识别结果里夹着 9 秒和 18 秒的间奏），
+    均分必然把间奏后面的词算到前面的块上 —— 模型拿到的 ref_text 和这一块
+    实际在唱的东西对不上，听感就是"词和调错位 / 乱说词"，间奏段还会被硬唱成乱吼。
+
+    offset/dur：给**试听小样**用。小样是从整首的第 35% 处裁一段出来唱的，
+    而时间戳是整首的绝对时间 —— 不挪过来，片段里一句都对不上，
+    改词在小样上就**等于没做**（踩过：小样听着还是原词，查下来是时间戳没裁）。
+
+    只在"框里的词就是识别出来的那份"时才敢用时间戳（否则宁可退回均分）。
+    """
+    if not song_path or not orig_lyric:
+        return None
+    # 没指定档位就把两档都找一遍：用户可能是用精准档认的，而唱歌入口
+    # （改词那张表单）并没有"你这份词是哪档认的"这个字段 —— 与其让他
+    # 因为档位对不上而拿不到时间戳（退回去按句数均分 ⇒ 又变成乱吼），
+    # 不如两份都看一眼。
+    order = [asr_size_norm(size)] if size else [ASR_DEFAULT, "large"]
+    norm = lambda s: (s or "").replace("\n", "|").replace(" ", "").replace("\u3000", "")
+    segs = None
+    for sz in order:
+        p = lyric_cache_path(song_path, lang, sz)
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p, encoding="utf-8") as f:
+                d = json.load(f)
+        except Exception:
+            continue
+        got = [x for x in (d.get("segments") or [])
+               if isinstance(x, dict) and x.get("text") and x.get("start") is not None]
+        if got and norm(d.get("line")) == norm(orig_lyric):
+            segs = got
+            break
+    if not segs:
+        return None
+    if (offset and offset > 0) or dur:
+        if STAGES not in sys.path:
+            sys.path.insert(0, STAGES)
+        from lyric_plan import slice_segments
+        segs, outside = slice_segments(segs, offset, dur or 0.0)
+        if not segs:
+            return None
+    return segs
+
+
+def rewrite_lyrics(job, vocal_wav, orig_lyric, new_lyric, out_wav, nfe=32,
+                   orig_segments=None):
     """
     改词：把人声轨**重新唱一遍** —— 旋律照原曲，词换成用户写的新词。
 
@@ -5121,14 +5412,30 @@ def rewrite_lyrics(job, vocal_wav, orig_lyric, new_lyric, out_wav, nfe=16):
     with open(fn, "w", encoding="utf-8") as f:
         f.write(new_lyric or "")
 
+    # 时间戳（有就给，子进程按时间把词对到每一块；没有它会退回均分并打警告）
+    lrc_arg = ""
+    if orig_segments:
+        fl = os.path.join(fd, "orig.lrc.json")
+        try:
+            with open(fl, "w", encoding="utf-8") as f:
+                json.dump(orig_segments, f, ensure_ascii=False)
+            lrc_arg = ' --orig-lrc "%s"' % fl
+            log(job, "  改词带上了 %d 句的时间戳（按时间对乐句，不按句数均分）"
+                % len(orig_segments))
+        except Exception:
+            lrc_arg = ""
+    else:
+        log(job, "  ⚠ 没拿到原词的时间戳，改词会按句数均分 —— "
+                 "歌里若有长间奏，词可能对错乐句（先点「识别歌词」能避免）")
+
     secs = wav_seconds(vocal_wav) or 0
     n = max(1, int(round(secs / LYRIC_CHUNK_SEC))) if secs else 4
     # 实测：加载模型约 50 秒（一次性），之后每块 28 秒音频约 90 秒。
     est = int(60 + n * 90)
     cmd = ('"%s" "%s" --vocal "%s" --orig-file "%s" --new-file "%s" '
-           '--out "%s" --nfe %d --chunk %.0f'
+           '--out "%s" --nfe %d --chunk %.0f%s'
            % (YING_PY, os.path.join(STAGES, "lyric_edit.py"),
-              vocal_wav, fo, fn, out_wav, int(nfe), LYRIC_CHUNK_SEC))
+              vocal_wav, fo, fn, out_wav, int(nfe), LYRIC_CHUNK_SEC, lrc_arg))
     rc, out = run(job, cmd, timeout=5400,
                   on_line=lambda ln: _pct_from_line(job, ln),
                   heartbeat=(est, "改词中：%d 块，本机约 %d 分钟（估算，以结束为准）"
@@ -5784,9 +6091,12 @@ def audition_pitch(job, vocal_wav, requested, rvc_model, idx, index_rate,
 def sing_role(job, rid, song_path, pitch=0, index_rate=None, model=None, mix=True,
               sep_model=None, rms_mix_rate=None, protect=None, prefix="sing",
               save=True, gate=True, pre_sep=None, output_kind="singing", label=None,
-              qc=True, lyric=None, nonvocal="keep", engine="rvc"):
+              qc=True, lyric=None, nonvocal="keep", engine="rvc", lyric_nfe=None,
+              lyric_seg_offset=0.0, lyric_seg_dur=None, hf="off"):
     """
     让角色唱歌：**先分离人声** -> RVC 只对干声变声 -> 用伴奏轨混音。
+
+    lyric_seg_offset/dur = 改词时间戳的偏移（试听小样用，见 lyric_segments_for）。
 
     ★ 为什么必须先分离（「唱出来没法听」的根治点，不是调参能救的）：
       RVC 是「人声 → 人声」的模型，靠 f0（基频）曲线工作。把整首歌直接喂进去，
@@ -5864,8 +6174,18 @@ def sing_role(job, rid, song_path, pitch=0, index_rate=None, model=None, mix=Tru
                    "长歌会切成约 %d 秒一块逐块生成，每块都会对齐回原来的长度，"
                    "免得人声和伴奏错开。这一步比变声慢，是整个链路里第二耗时的一段。"
                    % int(LYRIC_CHUNK_SEC))
+        # 采样步数：官方示例用 100（质量优先），HF Space 默认 32。
+        # 这里默认 32，想要更稳可以传更高（代价是每块时间线性变长）。
+        _segs = lyric_segments_for(song_path, orig_lyric,
+                                   offset=lyric_seg_offset or 0.0,
+                                   dur=lyric_seg_dur)
+        if (lyric_seg_offset or 0.0) > 0 and not _segs:
+            log(job, "  ⚠ 这一段里没有原词的时间戳，改词会按句数均分 —— "
+                     "小样段太靠后/太短时会出现，换个更长的试听长度更准")
         vocal_wav = rewrite_lyrics(job, vocal_wav, orig_lyric, new_lyric,
-                                   os.path.join(final, "lyric_%s.wav" % tag))
+                                   os.path.join(final, "lyric_%s.wav" % tag),
+                                   nfe=int(lyric_nfe or 32),
+                                   orig_segments=_segs)
         end_step(job, True, "已唱出新词的人声轨")
 
     # ---- 音高：可以是固定半音，也可以是 "auto" ----
@@ -5969,14 +6289,40 @@ def sing_role(job, rid, song_path, pitch=0, index_rate=None, model=None, mix=Tru
                    on_line=lambda ln: _pct_from_line(job, ln), heartbeat=hb)
 
     rc, out = _rvc(vocal_wav, index_rate)
-    # 兜底：索引命名规则不一致导致仍报 index 错误时，去掉索引再试一次
-    if rc != 0 and index_rate > 0 and "added index" in (out or "").lower():
-        log(job, "  索引仍然不可用，去掉索引重试一次")
+    # 兜底：带索引失败就去掉索引再试一次。
+    # ★ 原来只认 "added index" 这个字串，可索引配错的真实症状是 faiss 的
+    #   `assert d == self.d`（维度不符），日志里根本没有 "added index" ——
+    #   于是整首歌直接判失败。改成"只要带索引失败就降级重试"，理由：
+    #   没有索引只是音色细节少一点，唱不出来才是真的不能用。
+    if rc != 0 and index_rate > 0:
+        log(job, "  带索引唱歌失败，去掉索引重试一次（音色细节会少一点）")
         rc, out = _rvc(vocal_wav, 0)
     if rc != 0 or not os.path.exists(out_wav):
         end_step(job, False, "歌声转换失败")
         raise Fail("歌声转换失败（退出码 %d）。\n%s" % (rc, _tail(out, 4)))
     end_step(job, True, "已生成变声人声")
+
+    # ---- 高频补偿（可选，见 HF_FREQ 上面那张实测表）----
+    # 放在 Seed-VC 之前、且 Seed-VC 那条路不走这里：seedvc_polish 内部自己会做
+    # 一次交叉合成（fc 写死 3200），再叠一层就是补两遍，齿音会炸。
+    hf_info = None
+    if engine != "seedvc" and hf and hf != "off":
+        job["stage"] = "高频补偿"
+        begin_step(job, "高频补偿（%s）" % HF_LABEL.get(hf, hf).split(" —— ")[0],
+                   "RVC 的声码器在 5.7kHz 以上几乎没有能量，齿音只剩原唱的 1/10 —— "
+                   "这就是「闷 / 咬字糊」的来源。这一步把 %s Hz 以上换成原唱的真实"
+                   "辅音与气声。代价：原唱气声也带进来一点，音色会离角色远一些。"
+                   % ("{:,}".format(HF_FREQ.get(hf, 0))))
+        hf_out = os.path.join(final, "voice_hf_%s.wav" % tag)
+        new_wav, hf_info = hf_brighten(job, out_wav, vocal_wav, hf_out, hf)
+        if hf_info:
+            out_wav = new_wav
+            log(job, "  高频补偿：分频 %d Hz，音色距离预计 %.4f"
+                % (hf_info["fc"], {"light": 0.3015, "mid": 0.3316,
+                                   "strong": 0.3637}.get(hf, 0)))
+            end_step(job, True, "已补高频（分频 %d Hz）" % hf_info["fc"])
+        else:
+            end_step(job, False, "高频补偿没做成，用未补偿的干声")
 
     # ---- Seed-VC 精修（可选）：44.1k 再过一遍，抬音色 ----
     # 放在**口哨保护之前**：保护那一步会把"不是唱"的段换回原声，先精修再保护，
@@ -6162,6 +6508,8 @@ def sing_role(job, rid, song_path, pitch=0, index_rate=None, model=None, mix=Tru
                         "rms_mix_rate": (None if rms_mix_rate is None else float(rms_mix_rate)),
                         "protect": (None if protect is None else float(protect)),
                         "engine": engine,
+                        "hf": (hf if engine != "seedvc" else "off"),
+                        "hf_fc": (hf_info or {}).get("fc", 0),
                         "nonvocal": nonvocal,
                         "audition": audition,             # 体检表（含每档的八度错/吻合）
                     },
@@ -6678,7 +7026,8 @@ def clip_audio(job, src, dst, start_sec, secs):
 
 
 def _sing_preview(job, rid, song_path, secs, pitch, index_rate, rms_mix_rate,
-                  protect, sep_model, lyric=None, nonvocal="keep", engine="rvc"):
+                  protect, sep_model, lyric=None, nonvocal="keep", engine="rvc",
+                  lyric_nfe=None, hf="off"):
     """试听小样：整首链路照走，但只对其中一小段跑 RVC。
 
     为什么值得单独做一条路：正式的 RVC 变声是这首歌里**唯一**的长耗时步骤
@@ -6728,7 +7077,10 @@ def _sing_preview(job, rid, song_path, secs, pitch, index_rate, rms_mix_rate,
         job, rid, clip_v, pitch=pitch, index_rate=index_rate, prefix="preview",
         rms_mix_rate=rms_mix_rate, protect=protect, save=True, pre_sep=(clip_v, clip_i),
         output_kind="preview", label=os.path.basename(song_path), lyric=lyric,
-        nonvocal=nonvocal, engine=engine)
+        nonvocal=nonvocal, engine=engine, lyric_nfe=lyric_nfe,
+        # ★ 人声裁了，歌词时间戳也得跟着裁 —— 不然片段里一句都对不上，
+        #   改词在小样上等于没做（踩过：小样听着还是原词）。
+        lyric_seg_offset=start, lyric_seg_dur=secs, hf=hf)
 
     # 裁出来的中间片段用完了就删；小样本身留在 final 里给用户听。
     for p in (clip_v, clip_i):
@@ -6740,7 +7092,7 @@ def _sing_preview(job, rid, song_path, secs, pitch, index_rate, rms_mix_rate,
 def sing_job(job, rid, song_path, pitch=0, index_rate=None, quality="standard",
              auto_train=True, model=None, epochs=None, preview_secs=0,
              rms_mix_rate=None, protect=None, sep_model=None, lyric=None,
-             nonvocal="keep", engine="rvc"):
+             nonvocal="keep", engine="rvc", lyric_nfe=None, hf="off"):
     """
     「一键唱」入口：缺歌声模型就先把模型训出来，再直接开唱。
 
@@ -6758,7 +7110,8 @@ def sing_job(job, rid, song_path, pitch=0, index_rate=None, quality="standard",
     if preview_secs:
         return _sing_preview(job, rid, song_path, int(preview_secs), pitch,
                              index_rate, rms_mix_rate, protect, sep_model,
-                             lyric=lyric, nonvocal=nonvocal, engine=engine)
+                             lyric=lyric, nonvocal=nonvocal, engine=engine,
+                             lyric_nfe=lyric_nfe, hf=hf)
     if not model and not (role.get("rvc") or {}).get("model") and auto_train:
         n = len([s for s in role.get("segments", []) if s.get("dur", 0) >= 2.0])
         if n < 10:
@@ -6773,7 +7126,8 @@ def sing_job(job, rid, song_path, pitch=0, index_rate=None, quality="standard",
     return sing_role(job, rid, song_path, pitch=pitch, index_rate=index_rate,
                      model=model, mix=True, sep_model=sep_model,
                      rms_mix_rate=rms_mix_rate, protect=protect, lyric=lyric,
-                     nonvocal=nonvocal, engine=engine)
+                     nonvocal=nonvocal, engine=engine, lyric_nfe=lyric_nfe,
+                     hf=hf)
 
 
 def _rvc_spec_race(out):

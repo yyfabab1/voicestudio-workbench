@@ -31,13 +31,6 @@ def check(name, cond, detail=""):
     return cond
 
 
-def free_port(p):
-    try:
-        cdp_off(p)
-    except Exception:
-        pass
-
-
 def cdp_get(path, port=PORT):
     with urllib.request.urlopen("http://127.0.0.1:%d%s" % (port, path), timeout=20) as r:
         return json.loads(r.read().decode())

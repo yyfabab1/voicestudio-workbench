@@ -1399,15 +1399,6 @@ def list_packs(files):
     return out
 
 
-def pick_index(files, weight_name):
-    """找跟权重配套的索引库（没有就不强求：RVC 没有 index 也能跑，只是检索弱一点）。"""
-    stem = os.path.splitext(os.path.basename(weight_name))[0].lower()
-    for f in files:
-        if f.lower().endswith(".index"):
-            return f
-    return None
-
-
 def clean_name(name):
     """把 'Alastor-Hazbin-hotel-ita.zip' / 'Twilight Sparkle (Español Latino) - Weights Model.zip'
     洗成一个能看的角色名。

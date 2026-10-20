@@ -458,6 +458,17 @@ pre.log{
 .lyric-row{display:flex;gap:9px;align-items:flex-start;margin-bottom:6px}
 .lyric-row label{width:62px;flex:none;font-size:13px;color:var(--txt2);line-height:30px}
 .lyric-row textarea{flex:1;min-width:0}
+/* 校对表：一句一行。★ 必须限高 —— 一首歌二三十句，不限高会把页面顶到几千 px
+   （2026-10-19 那个「UI 畸形变大」就是这么来的，列表容器一律要有 max-height）。 */
+.proof-list{max-height:min(46vh,380px);overflow-y:auto;overflow-x:hidden;
+  overscroll-behavior:contain;border:1px solid var(--line);border-radius:10px;padding:6px}
+.proof-row{display:flex;gap:6px;align-items:center;padding:3px 2px}
+.proof-row+.proof-row{border-top:1px solid var(--line)}
+.proof-no{width:26px;flex:none;font-size:11px;color:var(--txt3);text-align:right}
+.proof-tm{width:104px;flex:none;font-size:12px;color:var(--txt2);
+  font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.proof-tx{flex:1;min-width:0;font-size:13px}
+.proof-del{flex:none}
 .btn.lg{padding:11px 20px;font-size:15px;border-radius:12px}
 .btn.lg:disabled{opacity:.4;cursor:not-allowed}
 .inp.sm{padding:5px 8px;font-size:12.5px;min-width:120px}
@@ -892,3 +903,34 @@ body.dropping::after{
 .tone-alias{display:flex;flex-wrap:wrap;gap:4px 6px;margin-top:6px}
 .tone-alias .g{font-size:11.5px;color:var(--txt3)}
 .tone-alias .g b{color:var(--txt2);font-weight:600}
+
+/* ============================================================
+   列表高度守卫 —— 「页面畸形变大」的根因修复
+   ------------------------------------------------------------
+   症状：素材/视频/市场卡片一多，整个页面无上限地往下长。
+   实测（1440x900，压力探针）：
+     基线              页面 5260px（5.8 屏），secVideos 单块 1798px
+     +240 张素材卡     页面 8579px（9.5 屏），libPanel   单块 3174px
+     再 +40 张视频卡   页面 10586px（11.8 屏），secVideos 单块 3806px
+   那时候这些容器全是「可滚=False 限高=False」—— 内容有多少就长多高，
+   于是"往下滚很久才到下一块"，看上去就是界面畸形地撑开了。
+   而且它是**条件触发**的（素材少时一切正常），所以很难第一时间想到。
+
+   ★ 只加高度上限 + 内部滚动，**一个功能都不删**：卡片照样全在，
+     只是从这个面板内部滚，而不是把整页撑到十几屏。
+   取值 60vh（≤600px）：一屏里始终看得到下一块的开头，不会"陷进"某个列表。
+   ============================================================ */
+/* 只管**原本没有上限**的那几个；.loc-list / .takelist 本来就有 340px 上限，
+   不在这里重复声明（重复会把它俩放大到 600px，反而退步）。 */
+.grid,.lib-grid,.viz-list,.viz-styles{
+  max-height:min(60vh,600px);
+  overflow-y:auto;overflow-x:hidden;
+  /* 留一点右内边距：滚动条不会压在卡片边框上 */
+  padding-right:3px;
+  /* 滚动容器自己在 GPU 层合成，长列表滚动不抖 */
+  overscroll-behavior:contain;
+}
+/* 角色墙是主区，给它高一点：它是"选谁"的入口，一屏多露几张更顺手 */
+.grid{max-height:min(66vh,660px)}
+/* 样式选择是横向排布的小卡，限到能看到两组就够，别占半屏 */
+.viz-styles{max-height:min(46vh,420px)}

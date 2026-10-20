@@ -481,12 +481,6 @@ def gap_for(piece):
     return GAP_CUT
 
 
-def lead_len(piece):
-    """段内第一个子句有几个字 —— 用来看"段首会不会太短"。"""
-    cl = _clauses(piece)
-    return len(cl[0]) if cl else 0
-
-
 def split_segments(text, budget=SEG_BUDGET, min_len=SEG_MIN):
     """把一句台词切成若干「合成单元」。返回 [{"text":..., "gap":...}, ...]。
 

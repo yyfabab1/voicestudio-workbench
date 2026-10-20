@@ -488,15 +488,28 @@ if __name__ == "__main__":
     finally:
         # 收尾：删掉本次验收的临时目录、角色目录里的 vtest 产物、以及测试任务记录。
         # 不清理的话任务中心会被一堆 "验收：分离" 淹掉，用户找不到自己的任务。
-        shutil.rmtree(WORK, ignore_errors=True)
-        for p in glob.glob(os.path.join(studio.role_dir(RID), "final", "*vtest*")):
-            with contextlib.suppress(Exception):
-                os.remove(p)
-        for d in CLEANUP_JOBS:
-            if d:
-                shutil.rmtree(d, ignore_errors=True)
-        # 探针角色是本次验收造的，删掉；权重和索引是磁盘上的真实产物，不动
-        if _MADE_ROLE[0]:
-            with contextlib.suppress(Exception):
-                studio.delete_role(_MADE_ROLE[0])
+        #
+        # ★★ 整段必须吞掉 **BaseException**（2026-10-20 实测）：
+        #    本机环境层有批量删除钩子（一条命令累计 50 次），超了之后**每一个**删除
+        #    动作都抛 SystemExit。而 `rmtree(ignore_errors=True)` 只接 OSError、
+        #    `contextlib.suppress(Exception)` 也接不住 SystemExit —— 于是清理把
+        #    SystemExit 抛到顶层，整关被判成"中断（一条判据都没跑到）"。
+        #    实测：本关判据 41/0 全绿，退出码却是 1，分诊因此 block。
+        #    清理收不干净只是留垃圾，**不该影响验收结论**。
+        try:
+            shutil.rmtree(WORK, ignore_errors=True)
+            for p in glob.glob(os.path.join(studio.role_dir(RID), "final", "*vtest*")):
+                with contextlib.suppress(BaseException):
+                    os.remove(p)
+            for d in CLEANUP_JOBS:
+                if d:
+                    shutil.rmtree(d, ignore_errors=True)
+            # 探针角色是本次验收造的，删掉；权重和索引是磁盘上的真实产物，不动
+            if _MADE_ROLE[0]:
+                with contextlib.suppress(BaseException):
+                    studio.delete_role(_MADE_ROLE[0])
+        except BaseException as e:
+            print("[warn] 收尾清理被打断（%s: %s）—— 不影响验收结论，"
+                  "残留请用 `bash _run_regression.sh gc` 另起一条命令清"
+                  % (type(e).__name__, e))
     sys.exit(code or 0)

@@ -25,8 +25,6 @@
     python vs.py check --for ingest          # 列出这项操作该跑的门禁 + 逐条命令
 全局开关 --json 让输出结构化，方便 AI 解析。
 """
-from __future__ import print_function
-
 import argparse
 import json
 import os

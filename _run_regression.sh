@@ -113,6 +113,10 @@ verify_jobctl:PY_VENV
 verify_music:PY_VENV
 verify_train_rounds_ui:PY_VENV
 verify_lyric_ui:PY_VENV
+verify_lyric_split:PY_MANAGED
+verify_lyrics_align:PY_MANAGED
+verify_asr_size:PY_MANAGED
+verify_index_pick:PY_MANAGED
 verify_speaker_match:PY_VENV
 verify_seg_purity:PY_MANAGED
 verify_seedvc:PY_VENV

@@ -71,21 +71,54 @@
           <div class="lyric-in">
             <div class="lyric-bar">
               <button class="btn sm" id="btnAutoLyric" type="button">🎧 自动识别原歌词</button>
+              <select class="inp sm" id="sgAsr" style="width:212px"
+                title="识别用的模型。三档认错的地方不一样 —— 这档认不出来就换那档试试">
+                <option value="medium" selected>标准档（快，1.5G）</option>
+                <option value="large">精准档（准，3.1G · 首次要下载）</option>
+                <option value="singing">歌声专用档（在中文歌唱语料上微调过）</option>
+              </select>
               <span class="hint" id="autoLyricHint">不必自己抄 —— 从歌里认出来，你再改</span>
+            </div>
+            <div class="lyric-row">
+              <label for="sgRef">正确歌词<br><span class="hint">可选</span></label>
+              <textarea id="sgRef" class="inp" rows="2"
+                placeholder="网上搜到这首歌的正确歌词，粘在这里再点「自动识别」——
+识别完会按它把错字改掉（时间戳不变）。认错一个字，唱出来就错一个字"></textarea>
             </div>
             <div class="lyric-row">
               <label for="sgOrig">原歌词</label>
               <textarea id="sgOrig" class="inp" rows="2"
                 placeholder="这首歌原来在唱什么。用 | 分句，尽量和换气/停顿对上"></textarea>
             </div>
+            <!-- 校对表：识别完把每一句摊开，错字可以直接改。
+                 为什么必须有：原词是要送进模型做音素化的，识别错一个字
+                 它就照着错的唱 —— 而 whisper 在歌唱上的错字是肉眼可见的。 -->
+            <div id="proofBox" style="display:none;width:100%">
+              <div class="lyric-bar">
+                <span class="hint">认出来的每一句 —— 直接改错字，改完点「保存校对」</span>
+                <button class="btn sm" id="btnProofSave" type="button">💾 保存校对</button>
+                <span class="hint" id="proofHint"></span>
+              </div>
+              <div id="proofList" class="proof-list"></div>
+            </div>
             <div class="lyric-row">
               <label for="sgNew">新歌词</label>
               <textarea id="sgNew" class="inp" rows="2"
                 placeholder="要改成什么。也用 | 分句，句数和原词差不多效果最好"></textarea>
             </div>
+            <div class="lyric-row">
+              <label for="sgNfe">改词质量</label>
+              <select class="inp sm" id="sgNfe" style="width:190px">
+                <option value="32" selected>标准 32 步（官方默认）</option>
+                <option value="64">精细 64 步（更稳，约 2 倍时间）</option>
+                <option value="100">极致 100 步（官方示例档，最慢）</option>
+                <option value="16">快速 16 步（试排用，可能发飘）</option>
+              </select>
+            </div>
             <div class="hint" id="sgLyricHint">
               两段都填了才会改词；只填一段或都不填 = 普通翻唱。
               改词比变声慢得多（一首 4 分钟的歌要多十几分钟），建议先「试听小样」确认。
+              步数是扩散采样步数 —— 步数越少越容易唱飘，先按「标准」跑，不稳再上「精细」。
             </div>
           </div>
         </details>
@@ -521,13 +554,22 @@
           </label>
           <label class="fld" style="flex:1;min-width:130px;margin:0">
             <label>音色相似度（索引强度）</label>
-            <input class="inp" id="inpIdx" type="number" value="0.75" min="0" max="1" step="0.05">
+            <input class="inp" id="inpIdx" type="number" value="0.5" min="0" max="1" step="0.05">
           </label>
           <label class="fld" style="flex:1;min-width:150px;margin:0">
             <label>唱歌引擎</label>
             <select class="inp" id="selEngine">
               <option value="rvc" selected>RVC（默认 · 快）</option>
               <option value="seedvc">Seed-VC 微调档（更像，慢 2~3 分钟）</option>
+            </select>
+          </label>
+          <label class="fld" style="flex:1;min-width:200px;margin:0">
+            <label>高频补偿（治"闷"）</label>
+            <select class="inp" id="selHf">
+              <option value="off" selected>关 —— 最像角色，但偏闷</option>
+              <option value="light">轻 —— 带宽 9.5k，音色几乎不变</option>
+              <option value="mid">中 —— 齿音/气声更清楚（先试这档）</option>
+              <option value="strong">强 —— 最清楚，但会更像原唱</option>
             </select>
           </label>
         </div>
@@ -538,6 +580,10 @@
         <div class="hint" style="margin-top:10px">
           <b>建议先点「先听 30 秒样片」</b>：整首转换本机要十几分钟，样片一两分钟就能
           听出音高和音色对不对；不满意改完再跑整首。<br>
+          <b>觉得闷、咬字糊、AI 味重</b> → 把「高频补偿」调一档再听：
+          RVC 的声码器在 5.7kHz 以上几乎没有能量，齿音只剩原唱的 1/10（实测），
+          补偿会把那段换成原唱的真实辅音和气声。代价是原唱气声也带进来一点，
+          音色会离角色远一些 —— 所以默认关，两头由你定。<br>
           跑起来后任务卡上有 <b>⏸ 暂停</b>：点一下会把后台进程真的挂起（显卡立刻空出来），
           再点 ▶ 从原地接着跑。<br>
           转换链路是<b>先分离人声和伴奏</b>，只对干声换音色，再用伴奏混音 ——

@@ -43,6 +43,38 @@ PORT = int(os.environ.get("VOICESTUDIO_PORT", "8756"))
 HOST = "127.0.0.1"
 STARTED_TS = time.time()
 
+_CODE_MTIME_CACHE = {"t": 0.0, "v": 0}
+
+
+def _code_mtime():
+    """磁盘上**代码**的最新修改时间（秒）。用来判断"跑着的进程是不是旧代码"。
+
+    只扫会改变行为的文件（后端 py + 前端 js/html/css + stages 下的 py）。
+    结果缓存 5 秒：/api/health 是前端轮询的，别每 2 秒 stat 一遍几十个文件。
+    """
+    now = time.time()
+    if now - _CODE_MTIME_CACHE["t"] < 5.0:
+        return _CODE_MTIME_CACHE["v"]
+    newest = 0
+    paths = [os.path.join(HERE, n) for n in ("studio.py", "server.py")]
+    for d in (WEB, STAGES):
+        try:
+            for n in os.listdir(d):
+                if n.endswith((".py", ".js", ".html", ".css")):
+                    paths.append(os.path.join(d, n))
+        except OSError:
+            pass
+    for p in paths:
+        try:
+            m = int(os.path.getmtime(p))
+        except OSError:
+            continue
+        if m > newest:
+            newest = m
+    _CODE_MTIME_CACHE["t"], _CODE_MTIME_CACHE["v"] = now, newest
+    return newest
+
+
 MIME = {
     ".html": "text/html; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
@@ -202,6 +234,11 @@ class Handler(BaseHTTPRequestHandler):
         #   train_rounds_ui 跑在昨天的旧服务上，新接口 404，看着像产品坏了。
         #   现在门禁开跑前先问这一句，版本不够就拒绝跑并提示重启。
         if path == "/api/health":
+            # ★ code_mtime：**磁盘上代码**的最新修改时间。
+            #   和 STARTED_TS 一比就知道"跑着的这个进程是不是旧代码"。
+            #   用户被这件事坑过不止一次：改了代码、没重启，界面上新功能就是不出现，
+            #   看起来像"功能没做"。门禁那边有 svc_probe 挡，但**用户看不到门禁**，
+            #   所以这个判断必须也能在界面上说出来。
             return json_response(self, {
                 "ok": True,
                 "service": SERVICE,
@@ -210,6 +247,8 @@ class Handler(BaseHTTPRequestHandler):
                 "pid": os.getpid(),
                 "started_at": time.strftime("%Y-%m-%d %H:%M:%S",
                                             time.localtime(STARTED_TS)),
+                "started_ts": int(STARTED_TS),
+                "code_mtime": _code_mtime(),
                 "uptime": int(time.time() - STARTED_TS),
                 "port": PORT,
             })
@@ -419,9 +458,6 @@ class Handler(BaseHTTPRequestHandler):
                                  "outputs": len(r.get("outputs") or [])})
             return json_response(self, {"installed": rows[::-1]})
 
-        if path == "/api/music/sources":
-            return json_response(self, {"sources": music_src.source_list()})
-
         if path == "/api/music/search":
             keyword = (q.get("q") or [""])[0].strip()
             if not keyword:
@@ -511,6 +547,26 @@ class Handler(BaseHTTPRequestHandler):
             data = storage_snapshot(force=want_refresh)
             return json_response(self, data)
 
+        # ---- 歌词缓存（识别结果 / 校对结果）----
+        # 界面要能把"认出来的每一句"摊开给用户改错字，所以必须能单独取。
+        # 只读缓存文件，不起任务、不跑模型 —— 页面刷新一次就跑一次识别是要挨骂的。
+        if path == "/api/lyrics":
+            p = (q.get("path") or [""])[0]
+            if not p or not os.path.isfile(p):
+                return json_response(self, {"error": "歌曲文件不存在: %s" % p}, 400)
+            d = studio.load_lyric_cache(p, (q.get("lang") or ["zh"])[0],
+                                        (q.get("asr") or [""])[0])
+            if d is None:
+                return json_response(self, {"ok": False, "note": "还没识别过"})
+            return json_response(self, {
+                "ok": True,
+                "line": d.get("line") or "",
+                "segments": d.get("segments") or [],
+                "duration": d.get("duration") or 0,
+                "proofread": bool(d.get("proofread")),
+                "ref": d.get("ref") or None,
+            })
+
         if path == "/api/viz/options":
             return json_response(self, studio.viz_options())
 
@@ -572,6 +628,25 @@ class Handler(BaseHTTPRequestHandler):
             if not r:
                 return json_response(self, {"error": "没有这个角色"}, 404)
             return json_response(self, {"role": r})
+
+        # ---- 保存校对过的歌词 ----
+        # 放在 /api/jobs 之前无关紧要，但必须在 read_json_body 之后（收的是 JSON）。
+        if path == "/api/lyrics/save":
+            p = body.get("path") or ""
+            if not p or not os.path.isfile(p):
+                return json_response(self, {"error": "歌曲文件不存在: %s" % p}, 400)
+            try:
+                d = studio.save_lyric_segments(
+                    p, body.get("segments") or [],
+                    lang=(body.get("lang") or "zh"),
+                    line=body.get("line"),
+                    size=body.get("asr"))
+            except Exception as e:
+                return json_response(self, {"error": "校对没存上：%s" % e}, 400)
+            return json_response(self, {
+                "ok": True, "line": d.get("line") or "",
+                "segments": d.get("segments") or [],
+            })
 
         if path == "/api/jobs":
             return self.create_job(body)
@@ -1090,10 +1165,14 @@ class Handler(BaseHTTPRequestHandler):
             song = body.get("song")
             if not song or not os.path.isfile(song):
                 return json_response(self, {"error": "歌曲文件不存在: %s" % song}, 400)
-            job = studio.new_job(None, "lyrics", "识别歌词：%s" % os.path.basename(song))
+            ref = (body.get("ref") or "").strip()
+            job = studio.new_job(None, "lyrics",
+                                 ("校准歌词：%s" if ref else "识别歌词：%s")
+                                 % os.path.basename(song))
             studio.run_in_thread(job, lambda: studio.lyrics_job(
                 job, song, lang=(body.get("lang") or "zh"),
-                sep_model=body.get("sep_model")))
+                sep_model=body.get("sep_model"), ref_text=ref,
+                asr_size=body.get("asr")))
             return json_response(self, {"job": studio.job_public(job)})
 
         if kind == "output_lyric":
@@ -1277,7 +1356,14 @@ class Handler(BaseHTTPRequestHandler):
                 nonvocal=(body.get("nonvocal") or "keep"),
                 # 引擎：rvc（默认，老链路）/ seedvc（44.1k 精修，音色更高，
                 # 需要先给这个角色跑过 Seed-VC 微调）
-                engine=(body.get("engine") or "rvc")))
+                engine=(body.get("engine") or "rvc"),
+                # 改词采样步数：官方示例用 100、HF Space 默认 32；步数越高越稳，
+                # 代价是每块时间线性变长。界面上给三档，不传就用 32。
+                lyric_nfe=(int(body["lyric_nfe"]) if str(
+                    body.get("lyric_nfe") or "").strip().isdigit() else None),
+                # 高频补偿：off / light / mid / strong（见 studio.HF_FREQ 的实测表）。
+                # 只认已知档位 —— 传个乱七八糟的值就当关，别让它悄悄改音色。
+                hf=(body.get("hf") if body.get("hf") in studio.HF_LEVELS else "off")))
             return json_response(self, {"job": studio.job_public(job)})
 
         if kind == "install_model":

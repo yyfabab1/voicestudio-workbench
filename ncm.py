@@ -450,19 +450,6 @@ def decrypt(src, out_dir, out_name=None, keep_meta=True):
             "has_meta": h["has_meta"]}
 
 
-def decrypt_many(paths, out_dir, on_log=None):
-    """批量解密。单首失败不中断，坏的原因原样带回（不许静默跳过）。"""
-    ok, bad = [], []
-    for p in paths:
-        try:
-            ok.append(decrypt(p, out_dir))
-        except Exception as e:
-            bad.append({"path": p, "why": str(e)[:160]})
-            if on_log:
-                on_log("解密失败 %s —— %s" % (os.path.basename(p), e))
-    return {"ok": ok, "bad": bad}
-
-
 if __name__ == "__main__":
     import sys
     args = [a for a in sys.argv[1:]]
