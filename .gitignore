@@ -1,0 +1,59 @@
+_*/
+# ---- 本机运行产物（不进仓库）----
+data/
+models/
+_tmp/
+_reg_gates/
+_archive/
+.asr-lib/
+.testlib/
+.cdp-market/
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.pid
+
+# ---- 音频/视频（版权与体积）----
+*.mp3
+*.m4a
+*.flac
+*.wav
+*.ogg
+*.opus
+*.wma
+*.aac
+*.ncm
+*.qmc
+*.mflac
+*.mp4
+*.mkv
+*.mov
+
+# ---- 打包与备份 ----
+*.zip
+*.7z
+*.tar
+*.gz
+*.bak
+*.bak-*
+*.tmp
+
+# ---- 编辑器/系统 ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*~
+
+# ---- 本机实验产物目录 ----
+_speechlong/
+精修成品/
+_pitchaud/
+
+# ---- 内部历史页/回归日志/备份 ----
+_*.html
+_reg_*
+*.bak
+*.bak_*
